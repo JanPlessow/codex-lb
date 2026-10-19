@@ -2,9 +2,7 @@
 
 ### Requirement: OAuth routing distinguishes targeted accounts from bootstrap flows
 
-An OAuth flow targeting an existing local account MUST resolve each server-side OAuth network operation using that intended local account's current upstream route. A targeted account with an active binding MUST use that bound pool and MUST fail before network I/O if the bound pool has no usable endpoint. An unknown targeted local account MUST fail before upstream I/O. A targeted unbound account MUST follow the existing default/direct routing policy without borrowing another account's binding.
-
-For OAuth flows without an intended local account, the existing bootstrap rule remains: when any active account proxy bindings exist, OAuth operations MUST use the configured default pool or fail closed if none is available.
+Targeted OAuth operations MUST resolve the intended local account's current route: its active binding, or normal default/direct policy if unbound. Unknown targets and unusable active bindings MUST fail before upstream I/O. Untargeted OAuth MUST retain bootstrap policy: when active account bindings exist, use the default pool or fail closed if unavailable.
 
 #### Scenario: Targeted bound account needs no default pool
 - **GIVEN** the intended local account has an active bound proxy pool and no global default exists
