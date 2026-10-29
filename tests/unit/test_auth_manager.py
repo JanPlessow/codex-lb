@@ -166,6 +166,7 @@ class _DummyRepo:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("refresh_fence_mode")
 async def test_ensure_fresh_detached_refresh_owns_session_on_caller_cancel(monkeypatch):
     """Regression: a client disconnect during a forced token refresh must not
     strand a background-pool connection. The shielded refresh task must write
@@ -275,6 +276,75 @@ async def test_ensure_fresh_preserves_paused_status_on_success(monkeypatch):
     assert account.status is AccountStatus.PAUSED
     assert repo.status_payload is None
     assert repo.tokens_payload is not None
+
+
+@pytest.mark.asyncio
+async def test_ensure_fresh_uses_stored_access_token_when_reauth_is_required(monkeypatch):
+    refresh_called = False
+
+    async def _unexpected_refresh(_: str, **_kwargs: object) -> TokenRefreshResult:
+        nonlocal refresh_called
+        refresh_called = True
+        raise AssertionError("reauth-required request preflight must not refresh")
+
+    monkeypatch.setattr(auth_manager_module, "refresh_access_token", _unexpected_refresh)
+
+    encryptor = TokenEncryptor()
+    account = Account(
+        id="acc_reauth_request",
+        chatgpt_account_id="chatgpt-account",
+        email="user@example.com",
+        plan_type="plus",
+        access_token_encrypted=encryptor.encrypt("access-still-usable"),
+        refresh_token_encrypted=encryptor.encrypt("refresh-invalid"),
+        id_token_encrypted=encryptor.encrypt("id-old"),
+        last_refresh=datetime(2020, 1, 1),
+        status=AccountStatus.REAUTH_REQUIRED,
+        deactivation_reason="re-login required",
+    )
+    manager = AuthManager(cast(AccountsRepositoryPort, _DummyRepo()))
+
+    result = await manager.ensure_fresh(account)
+
+    assert result is account
+    assert result.status is AccountStatus.REAUTH_REQUIRED
+    assert refresh_called is False
+
+
+@pytest.mark.asyncio
+async def test_forced_refresh_still_fails_closed_when_reauth_is_required(monkeypatch):
+    refresh_called = False
+
+    async def _unexpected_refresh(_: str, **_kwargs: object) -> TokenRefreshResult:
+        nonlocal refresh_called
+        refresh_called = True
+        raise AssertionError("terminal refresh material must not be re-exchanged")
+
+    monkeypatch.setattr(auth_manager_module, "refresh_access_token", _unexpected_refresh)
+    monkeypatch.setattr(auth_manager_module, "get_refresh_claim_coordinator", lambda: None)
+
+    encryptor = TokenEncryptor()
+    account = Account(
+        id="acc_reauth_forced",
+        chatgpt_account_id="chatgpt-account",
+        email="user@example.com",
+        plan_type="plus",
+        access_token_encrypted=encryptor.encrypt("access-rejected"),
+        refresh_token_encrypted=encryptor.encrypt("refresh-invalid"),
+        id_token_encrypted=encryptor.encrypt("id-old"),
+        last_refresh=datetime(2020, 1, 1),
+        status=AccountStatus.REAUTH_REQUIRED,
+        deactivation_reason="re-login required",
+    )
+    repo = _DummyRepo()
+    repo.accounts_by_id[account.id] = account
+    manager = AuthManager(cast(AccountsRepositoryPort, repo))
+
+    with pytest.raises(RefreshError) as exc_info:
+        await manager.ensure_fresh(account, force=True)
+
+    assert exc_info.value.is_permanent is True
+    assert refresh_called is False
 
 
 @pytest.mark.asyncio
@@ -500,6 +570,7 @@ async def test_refresh_account_does_not_promote_unknown_workspace_into_taken_slo
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("refresh_fence_mode")
 async def test_refresh_account_converts_upstream_route_failure_to_refresh_error(monkeypatch):
     @asynccontextmanager
     async def fake_background_session() -> AsyncIterator[object]:
@@ -543,6 +614,7 @@ async def test_refresh_account_converts_upstream_route_failure_to_refresh_error(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("refresh_fence_mode")
 async def test_ensure_fresh_singleflights_concurrent_refreshes(monkeypatch):
     started = asyncio.Event()
     release = asyncio.Event()
@@ -902,11 +974,7 @@ async def test_ensure_fresh_reuses_recent_failure_without_reissuing_refresh(monk
         raise RefreshError("invalid_grant", "refresh failed", False)
 
     monkeypatch.setattr(auth_manager_module, "refresh_access_token", _fake_refresh)
-    monkeypatch.setattr(
-        auth_manager_module,
-        "get_settings",
-        lambda: SimpleNamespace(proxy_refresh_failure_cooldown_seconds=30.0),
-    )
+    monkeypatch.setattr(auth_manager_module, "_REFRESH_FAILURE_COOLDOWN_SECONDS", 30.0)
 
     encryptor = TokenEncryptor()
     stale_refresh = utcnow().replace(year=utcnow().year - 1)
@@ -942,11 +1010,7 @@ async def test_ensure_fresh_does_not_reuse_recent_transport_failure(monkeypatch)
         raise RefreshError("transport_error", "temporary dns failure", False, transport_error=True)
 
     monkeypatch.setattr(auth_manager_module, "refresh_access_token", _fake_refresh)
-    monkeypatch.setattr(
-        auth_manager_module,
-        "get_settings",
-        lambda: SimpleNamespace(proxy_refresh_failure_cooldown_seconds=30.0),
-    )
+    monkeypatch.setattr(auth_manager_module, "_REFRESH_FAILURE_COOLDOWN_SECONDS", 30.0)
 
     encryptor = TokenEncryptor()
     stale_refresh = utcnow().replace(year=utcnow().year - 1)
@@ -994,11 +1058,7 @@ async def test_ensure_fresh_retry_after_persist_conflict_re_exchanges(monkeypatc
         raise RefreshError("token_persist_conflict", "cas never landed", False, transport_error=True)
 
     monkeypatch.setattr(auth_manager_module, "refresh_access_token", _fake_refresh)
-    monkeypatch.setattr(
-        auth_manager_module,
-        "get_settings",
-        lambda: SimpleNamespace(proxy_refresh_failure_cooldown_seconds=30.0),
-    )
+    monkeypatch.setattr(auth_manager_module, "_REFRESH_FAILURE_COOLDOWN_SECONDS", 30.0)
 
     encryptor = TokenEncryptor()
     stale_refresh = utcnow().replace(year=utcnow().year - 1)
@@ -1039,11 +1099,7 @@ async def test_ensure_fresh_does_not_reuse_failure_after_refresh_token_changes(m
         raise RefreshError("invalid_grant", f"refresh failed for {refresh_token}", False)
 
     monkeypatch.setattr(auth_manager_module, "refresh_access_token", _fake_refresh)
-    monkeypatch.setattr(
-        auth_manager_module,
-        "get_settings",
-        lambda: SimpleNamespace(proxy_refresh_failure_cooldown_seconds=30.0),
-    )
+    monkeypatch.setattr(auth_manager_module, "_REFRESH_FAILURE_COOLDOWN_SECONDS", 30.0)
 
     encryptor = TokenEncryptor()
     stale_refresh = utcnow().replace(year=utcnow().year - 1)
@@ -1204,16 +1260,13 @@ class _TokenCasMissRepo(_DummyRepo):
 
 
 @pytest.mark.asyncio
-async def test_refresh_persists_new_tokens_when_cas_misses_on_reencrypted_same_material(monkeypatch):
-    """Regression: a successful refresh must not adopt a compare-and-set loser
-    just because the stored ciphertext changed. A concurrent re-auth/import can
-    re-encrypt the SAME refresh-token plaintext (Fernet is non-deterministic),
-    which misses the CAS without any newer rotation. Adopting that row would
-    discard the single-use token this attempt just exchanged and leave the
-    account holding the already-consumed one. The refresh must retry the CAS
-    against the observed ciphertext so its own rotation wins."""
+async def test_refresh_preflight_adopts_reencrypted_same_material_before_exchange(monkeypatch):
+    """A fresh preflight row with the same refresh-token plaintext is safe to
+    exchange, but persistence must use its current ciphertext as the CAS guard."""
+    refresh_inputs: list[str] = []
 
-    async def _fake_refresh(_: str, **_kwargs: object) -> TokenRefreshResult:
+    async def _fake_refresh(refresh_token: str, **_kwargs: object) -> TokenRefreshResult:
+        refresh_inputs.append(refresh_token)
         return TokenRefreshResult(
             access_token="access-new",
             refresh_token="refresh-new",
@@ -1248,24 +1301,26 @@ async def test_refresh_persists_new_tokens_when_cas_misses_on_reencrypted_same_m
 
     result = await manager.refresh_account(account)
 
-    # Our freshly issued single-use token wins; the re-encrypted old token is
-    # never adopted.
+    # The fresh ciphertext is adopted before exchange, so the issued token is
+    # persisted in one guarded write without first attempting the stale guard.
+    assert refresh_inputs == ["refresh-old"]
     assert encryptor.decrypt(result.refresh_token_encrypted) == "refresh-new"
     assert repo.tokens_payload is not None
     assert encryptor.decrypt(cast(bytes, repo.tokens_payload["refresh_token_encrypted"])) == "refresh-new"
-    # First attempt used the stale (pre-race) ciphertext and missed; the retry
-    # used the freshly observed ciphertext and won.
-    assert repo.update_attempts == [original_ciphertext, reencrypted_same]
+    assert repo.update_attempts == [reencrypted_same]
     assert result.status == AccountStatus.ACTIVE
 
 
 @pytest.mark.asyncio
-async def test_refresh_adopts_peer_rotation_when_cas_misses_on_new_material(monkeypatch):
-    """A compare-and-set miss caused by a genuinely newer refresh-token rotation
-    from a peer must be adopted (never clobbered) and must not persist this
-    attempt's now-consumed token."""
+@pytest.mark.usefixtures("refresh_fence_mode")
+async def test_refresh_preflight_adopts_peer_rotation_without_exchange(monkeypatch):
+    """A genuinely newer peer token is adopted before any upstream exchange or
+    token persistence attempt can consume or clobber refresh material."""
+    refresh_called = False
 
     async def _fake_refresh(_: str, **_kwargs: object) -> TokenRefreshResult:
+        nonlocal refresh_called
+        refresh_called = True
         return TokenRefreshResult(
             access_token="access-new",
             refresh_token="refresh-new",
@@ -1289,7 +1344,6 @@ async def test_refresh_adopts_peer_rotation_when_cas_misses_on_new_material(monk
         status=AccountStatus.ACTIVE,
         deactivation_reason=None,
     )
-    original_ciphertext = account.refresh_token_encrypted
     # A peer committed a DIFFERENT refresh-token plaintext.
     peer_rotated = encryptor.encrypt("refresh-peer")
     latest = Account(**{column.name: getattr(account, column.name) for column in Account.__table__.columns})
@@ -1299,12 +1353,13 @@ async def test_refresh_adopts_peer_rotation_when_cas_misses_on_new_material(monk
 
     result = await manager.refresh_account(account)
 
-    # The peer's rotation is adopted; our exchanged token is not written.
+    # The peer's rotation is adopted without consuming the stale token or
+    # issuing any persistence write.
     assert result is account
     assert encryptor.decrypt(result.refresh_token_encrypted) == "refresh-peer"
+    assert refresh_called is False
     assert repo.tokens_payload is None
-    # Only the initial CAS ran; no retry once a real rotation was detected.
-    assert repo.update_attempts == [original_ciphertext]
+    assert repo.update_attempts == []
 
 
 class _TokenCasAlwaysMissRepo(_DummyRepo):
@@ -2233,6 +2288,7 @@ class _TokenCasPeerRotationInReadWriteGapRepo(_DummyRepo):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("refresh_fence_mode")
 async def test_refresh_adopts_peer_rotation_landing_in_read_write_gap(monkeypatch):
     """Regression (FINDING: no-unconditional-write / TOCTOU): a genuinely different
     peer rotation that lands AFTER the plaintext-confirming re-read but BEFORE the
@@ -2354,6 +2410,7 @@ class _TokenCasSamePlaintextInReadWriteGapRepo(_DummyRepo):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("refresh_fence_mode")
 async def test_refresh_persists_new_token_when_same_plaintext_reencryption_lands_in_gap(monkeypatch):
     """Regression (no-unconditional-write, horn A): a same-plaintext re-encryption
     landing in the read->write gap misses the guarded compare-and-set, but the refresh
@@ -2566,6 +2623,7 @@ async def test_permanent_failure_status_cas_exhaustion_surfaces_transient_error(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("refresh_fence_mode")
 async def test_claim_wait_is_capped_by_caller_refresh_budget(monkeypatch):
     """Regression: the shielded singleflight body outlives a cancelled caller,
     so a foreign refresh claim must not keep it polling for the full
@@ -2808,6 +2866,10 @@ async def test_claim_release_error_does_not_mask_refresh_body_error(monkeypatch)
             "app_session_terminated",
             "Your session has been terminated. Please sign in again.",
         ),
+        (
+            "invalid_refresh_token",
+            "Refresh token invalid - re-login required.",
+        ),
     ],
 )
 @pytest.mark.asyncio
@@ -2856,3 +2918,19 @@ async def test_refresh_account_requires_reauth_when_upstream_session_is_invalid(
     reason = repo.status_payload["deactivation_reason"]
     assert isinstance(reason, str)
     assert "re-login" in reason.lower() or "expired" in reason.lower()
+
+
+@pytest.fixture(params=[False, True])
+def refresh_fence_mode(request, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.core import pool_refresh_fence
+
+    monkeypatch.setattr(
+        pool_refresh_fence,
+        "get_settings",
+        lambda: SimpleNamespace(
+            data_dir=tmp_path,
+            pool_refresh_replay_fence_enabled=request.param,
+        ),
+    )

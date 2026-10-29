@@ -132,11 +132,12 @@ async def test_live_tunnel_is_revoked_and_port_retains_persona_ownership(monkeyp
         assert await asyncio.wait_for(reader.read(), 2) == b""
         writer.close()
         await writer.wait_closed()
-        assert runtime.listeners["persona-a"].server.is_serving()
+        listener = runtime.listeners["persona-a"]
+        assert listener.server is not None and listener.server.is_serving()
         reader, writer = await asyncio.open_connection("127.0.0.1", unused_tcp_port)
         writer.write(b"CONNECT example.com:443 HTTP/1.1\r\n\r\n")
         await writer.drain()
-        assert b"502" in await reader.read()
+        assert b"502" in await asyncio.wait_for(reader.read(), 1)
         assert len(upstream_connections) == 1
         writer.close()
         await writer.wait_closed()

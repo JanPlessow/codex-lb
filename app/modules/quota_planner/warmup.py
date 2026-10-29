@@ -11,13 +11,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import usage as usage_core
 from app.core.clients.proxy import UpstreamProxyRouteTrace, stream_responses
+from app.core.config.dashboard_overrides import dashboard_overrides_bound, effective_settings
+from app.core.config.settings import get_settings
+from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
 from app.core.openai.parsing import parse_sse_event
 from app.core.openai.requests import ResponsesRequest
 from app.core.pool_policy import assert_pool_account
+from app.core.resilience.toggles import bind_resilience_toggles
 from app.core.upstream_proxy import UpstreamProxyRouteError, resolve_upstream_route
+from app.core.utils.shared_future import _await_cleanup_deferring_cancellation
 from app.core.utils.time import naive_utc_to_epoch, utcnow
-from app.db.models import Account, AccountStatus, QuotaPlannerDecision
+from app.db.models import Account, AccountStatus, DashboardSettings, QuotaPlannerDecision
 from app.db.session import get_background_session
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.api_keys.repository import ApiKeysRepository
@@ -33,7 +38,11 @@ from app.modules.usage.repository import UsageRepository
 from app.modules.usage.updater import UsageUpdater
 
 from .logic import SHORT_WINDOW_MAX_MINUTES, PlannerSettings
-from .repository import QuotaPlannerRepository
+from .repository import (
+    WARMUP_EXECUTION_CLAIM_TTL_SECONDS,
+    QuotaPlannerRepository,
+    warmup_claim_is_expired,
+)
 
 WARMUP_REQUEST_KIND = "warmup"
 # Rows written by the same upstream fetch land within milliseconds of each
@@ -44,6 +53,20 @@ WARMUP_DEFAULT_INPUT_BUDGET = 32
 WARMUP_DEFAULT_OUTPUT_BUDGET = 8
 
 logger = logging.getLogger(__name__)
+
+
+def _warmup_request_id(decision_id: str) -> str:
+    return f"quota-warmup-{decision_id}"
+
+
+def _warmup_claim_ttl_seconds(dashboard_settings: DashboardSettings) -> float:
+    # M1 stream/bridge budgets: the stream request budget is dashboard-managed,
+    # so the claim lease floors at the *effective* budget (dashboard column,
+    # else environment, else default) resolved from the snapshot the caller
+    # already holds — never a bare ``get_settings()`` read.
+    settings = effective_settings(dashboard_settings, get_settings())
+    budget_seconds = float(getattr(settings, "http_responses_stream_request_budget_seconds", 0.0) or 0.0)
+    return max(WARMUP_EXECUTION_CLAIM_TTL_SECONDS, budget_seconds)
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,12 +104,21 @@ class QuotaWarmupService:
         api_key_id: str | None = None,
         force_probe: bool = False,
         decision_id: str | None = None,
+        dashboard_settings: DashboardSettings | None = None,
     ) -> WarmupExecutionResult:
+        decision = await self._planner.get_decision(decision_id) if decision_id is not None else None
+        if decision is not None and decision.status not in {"planned", "executing"}:
+            return WarmupExecutionResult(
+                decision_id=decision.id,
+                status=decision.status,
+                reason=decision.reason or f"decision_{decision.status}",
+                executed_at=decision.executed_at,
+            )
+
         settings = await self._planner.get_settings()
         account = await self._accounts.get_by_id(account_id)
         resolved_model = (model or settings.warmup_model_preference or "gpt-5.4-mini").strip()
         scheduled_at = utcnow()
-        decision = await self._planner.get_decision(decision_id) if decision_id is not None else None
         if decision is None:
             decision = await self._planner.log_decision(
                 mode=settings.mode,
@@ -98,7 +130,7 @@ class QuotaWarmupService:
                 status="planned",
                 idempotency_key=f"manual:{scheduled_at:%Y%m%d%H%M%S}:{account_id}:{uuid4().hex}",
             )
-        elif decision.status != "planned":
+        elif decision.status == "executing" and not warmup_claim_is_expired(decision):
             return WarmupExecutionResult(
                 decision_id=decision.id,
                 status=decision.status,
@@ -112,12 +144,15 @@ class QuotaWarmupService:
             force_probe=force_probe,
         )
         if not allowed:
-            row = await self._planner.update_decision_status(
-                decision.id,
-                status="skipped",
-                reason=reason,
-                expected_status="planned",
-            )
+            if decision.status == "executing" and warmup_claim_is_expired(decision):
+                row = await self._planner.skip_stale_warmup_claim(decision.id, reason=reason)
+            else:
+                row = await self._planner.update_decision_status(
+                    decision.id,
+                    status="skipped",
+                    reason=reason,
+                    expected_status="planned",
+                )
             if row is None:
                 current = await self._planner.get_decision(decision.id)
                 if current is not None:
@@ -134,14 +169,33 @@ class QuotaWarmupService:
             )
         assert account is not None
 
+        # One dashboard snapshot per warm-up: the scheduler passes its per-tick
+        # snapshot; the dashboard API path (request context) takes one here.
+        if dashboard_settings is None:
+            dashboard_settings = await get_settings_cache().get()
         claimed = await self._planner.claim_warmup_decision(
             decision.id,
             since=_local_midnight(),
             max_warmups=settings.max_warmups_per_day,
             max_credits=settings.max_warmup_credits_per_day,
+            claim_ttl_seconds=_warmup_claim_ttl_seconds(dashboard_settings),
         )
         if claimed is None:
             return await self._resolve_refused_claim(decision_id=decision.id, settings=settings)
+        claim_executed_at = claimed.executed_at
+        claim_lease_expires_at = claimed.lease_expires_at
+        assert claim_executed_at is not None
+        assert claim_lease_expires_at is not None
+
+        request_id = _warmup_request_id(decision.id)
+        replay_result = await self._reconcile_existing_warmup_request(
+            decision_id=decision.id,
+            request_id=request_id,
+            claim_executed_at=claim_executed_at,
+            claim_lease_expires_at=claim_lease_expires_at,
+        )
+        if replay_result is not None:
+            return replay_result
 
         reservation_id: str | None = None
         if api_key_id is not None:
@@ -162,7 +216,10 @@ class QuotaWarmupService:
                     decision.id,
                     status="skipped",
                     reason="api_key_not_found",
+                    executed_at=utcnow(),
                     expected_status="executing",
+                    expected_executed_at=claim_executed_at,
+                    expected_lease_expires_at=claim_lease_expires_at,
                 )
                 return await self._result_from_update_or_current(
                     decision_id=decision.id,
@@ -175,7 +232,10 @@ class QuotaWarmupService:
                     decision.id,
                     status="skipped",
                     reason="api_key_invalid",
+                    executed_at=utcnow(),
                     expected_status="executing",
+                    expected_executed_at=claim_executed_at,
+                    expected_lease_expires_at=claim_lease_expires_at,
                 )
                 return await self._result_from_update_or_current(
                     decision_id=decision.id,
@@ -189,7 +249,10 @@ class QuotaWarmupService:
                     decision.id,
                     status="skipped",
                     reason=reason,
+                    executed_at=utcnow(),
                     expected_status="executing",
+                    expected_executed_at=claim_executed_at,
+                    expected_lease_expires_at=claim_lease_expires_at,
                 )
                 return await self._result_from_update_or_current(
                     decision_id=decision.id,
@@ -198,24 +261,36 @@ class QuotaWarmupService:
                     fallback_reason=reason,
                 )
 
-        request_id = f"quota-warmup-{uuid4().hex}"
         started = time.monotonic()
         route_trace = UpstreamProxyRouteTrace()
+        reservation_finalized = False
         try:
-            usage = await self._send_warmup_probe(
-                account=account,
-                model=resolved_model,
-                request_id=request_id,
-                route_trace=route_trace,
-            )
-            if reservation_id is not None:
-                await self._api_keys.finalize_usage_reservation(
-                    reservation_id,
+            # The probe must run under the same effective stream budget the
+            # claim lease floors at (``_warmup_claim_ttl_seconds``); otherwise a
+            # dashboard budget below the environment value would expire the
+            # lease while the probe is still streaming and let another replica
+            # reclaim the decision. Same binding as the proxy warm-up path
+            # (``proxy/_service/warmup.py``).
+            with dashboard_overrides_bound(dashboard_settings):
+                usage = await self._send_warmup_probe(
+                    account=account,
                     model=resolved_model,
-                    input_tokens=usage.input_tokens,
-                    output_tokens=usage.output_tokens,
-                    cached_input_tokens=usage.cached_input_tokens,
+                    request_id=request_id,
+                    route_trace=route_trace,
                 )
+            if reservation_id is not None:
+                settlement_cancellation = await _await_cleanup_deferring_cancellation(
+                    self._api_keys.finalize_usage_reservation(
+                        reservation_id,
+                        model=resolved_model,
+                        input_tokens=usage.input_tokens,
+                        output_tokens=usage.output_tokens,
+                        cached_input_tokens=usage.cached_input_tokens,
+                    )
+                )
+                reservation_finalized = True
+                if settlement_cancellation is not None:
+                    raise settlement_cancellation
             await self._request_logs.add_log(
                 account_id=account_id,
                 api_key_id=api_key_id,
@@ -247,6 +322,8 @@ class QuotaWarmupService:
                 reason="warmup_executed",
                 executed_at=utcnow(),
                 expected_status="executing",
+                expected_executed_at=claim_executed_at,
+                expected_lease_expires_at=claim_lease_expires_at,
             )
             return await self._result_from_update_or_current(
                 decision_id=decision.id,
@@ -256,7 +333,7 @@ class QuotaWarmupService:
                 request_id=request_id,
             )
         except asyncio.CancelledError:
-            if reservation_id is not None:
+            if reservation_id is not None and not reservation_finalized:
                 await self._api_keys.fail_usage_reservation(
                     reservation_id,
                     model=resolved_model,
@@ -305,6 +382,8 @@ class QuotaWarmupService:
                 reason=f"warmup_failed:{type(exc).__name__}",
                 executed_at=utcnow(),
                 expected_status="executing",
+                expected_executed_at=claim_executed_at,
+                expected_lease_expires_at=claim_lease_expires_at,
             )
             return await self._result_from_update_or_current(
                 decision_id=decision.id,
@@ -344,7 +423,7 @@ class QuotaWarmupService:
         current = await self._planner.get_decision_fresh(decision_id)
         if current is None:
             return WarmupExecutionResult(decision_id=decision_id, status="skipped", reason="decision_missing")
-        if current.status != "planned":
+        if current.status not in {"planned", "executing"}:
             return WarmupExecutionResult(
                 decision_id=current.id,
                 status=current.status,
@@ -357,12 +436,21 @@ class QuotaWarmupService:
             reason = "daily_warmup_count_budget_exhausted"
         else:
             reason = "daily_warmup_credit_budget_exhausted"
-        row = await self._planner.update_decision_status(
-            decision_id,
-            status="skipped",
-            reason=reason,
-            expected_status="planned",
-        )
+        if current.status == "planned":
+            row = await self._planner.update_decision_status(
+                decision_id,
+                status="skipped",
+                reason=reason,
+                expected_status="planned",
+            )
+        elif warmup_claim_is_expired(current):
+            row = await self._planner.skip_stale_warmup_claim(
+                decision_id,
+                reason=reason,
+                executed_at=utcnow(),
+            )
+        else:
+            row = current
         return await self._result_from_update_or_current(
             decision_id=decision_id,
             row=row,
@@ -390,6 +478,37 @@ class QuotaWarmupService:
             request_id=request_id,
             executed_at=row.executed_at,
         )
+
+    async def _reconcile_existing_warmup_request(
+        self,
+        *,
+        decision_id: str,
+        request_id: str,
+        claim_executed_at: datetime,
+        claim_lease_expires_at: datetime,
+    ) -> WarmupExecutionResult | None:
+        existing = await self._request_logs.latest_successful_log_for_request_id(
+            request_id,
+            request_kind=WARMUP_REQUEST_KIND,
+        )
+        if existing is not None:
+            row = await self._planner.update_decision_status(
+                decision_id,
+                status="executed",
+                reason="warmup_executed",
+                executed_at=existing.requested_at,
+                expected_status="executing",
+                expected_executed_at=claim_executed_at,
+                expected_lease_expires_at=claim_lease_expires_at,
+            )
+            return await self._result_from_update_or_current(
+                decision_id=decision_id,
+                row=row,
+                fallback_status="executed",
+                fallback_reason="warmup_executed",
+                request_id=request_id,
+            )
+        return None
 
     async def cancel_decision(self, decision_id: str) -> WarmupExecutionResult | None:
         row = await self._planner.get_decision(decision_id)
@@ -518,6 +637,9 @@ class QuotaWarmupService:
                 route_trace.record_direct()
             else:
                 route_trace.record(route=route, fallback_used=False)
+        # C2-3 resilience toggles: background probe, no request snapshot to
+        # inherit; take one here so the breaker gate follows the dashboard.
+        bind_resilience_toggles(await get_settings_cache().get())
         async for event_block in stream_responses(
             payload,
             headers,

@@ -5,8 +5,9 @@ from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from app.core.auth.dashboard_access import DashboardPrincipal, Permission
 from app.core.auth.dependencies import (
-    require_dashboard_admin_access,
+    require_dashboard_permission,
     set_dashboard_error_format,
     validate_dashboard_session,
 )
@@ -31,8 +32,11 @@ router = APIRouter(
 )
 
 
-async def require_browser_access(request: Request) -> None:
-    await require_dashboard_admin_access(request)
+async def require_browser_access(
+    request: Request,
+    principal: DashboardPrincipal = Depends(require_dashboard_permission(Permission.SECURITY_WRITE)),
+) -> None:
+    del principal
     state = get_dashboard_session_store().get(request.cookies.get(DASHBOARD_SESSION_COOKIE))
     if state is None or not state.password_verified:
         raise HTTPException(403, "Sign in to the dashboard before opening an account browser")

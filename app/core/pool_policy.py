@@ -85,7 +85,11 @@ def quota_admits(primary: Any, secondary: Any, *, bound: bool, now: datetime | N
     # The authoritative weekly sample is carried in primary; the placeholder
     # has no quota window and must not make an otherwise eligible account fail
     # the freshness gate.
-    windows = [usage for usage in (primary, secondary) if usage is not None and getattr(usage, "window_minutes", None) != 0]
+    windows = [
+        usage for usage in (primary, secondary) if usage is not None and getattr(usage, "window_minutes", None) != 0
+    ]
+    if not windows:
+        return False
     for usage in windows:
         if usage is None or not isinstance(usage.recorded_at, datetime):
             return False

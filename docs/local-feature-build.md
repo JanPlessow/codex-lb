@@ -1,9 +1,9 @@
 # Install the local feature build
 
-This branch publishes the complete application, dashboard, and dispatcher source
-from the local Codex LB 1.24.0 installation captured on October 29, 2026. It is a
-separate development line from the fork's newer upstream `main`. Clone this
-branch explicitly to get these features. No packaged release is implied.
+This build integrates the application, dashboard, and dispatcher features from
+the local installation captured on October 29, 2026, with the fork's newer
+`main` (1.25.0-beta.9). Build from this repository to obtain those features.
+This source integration does not install or release a packaged application.
 
 The requirements for this distribution are in
 [Local feature distribution](../openspec/specs/local-feature-distribution/spec.md).
@@ -17,7 +17,7 @@ The browser contract and operating notes are in
 | --- | --- |
 | Persistent account-specific Chrome profiles, direct/proxy enrollment, reauthentication, and callback recovery | Opt-in; macOS, local SQLite, Google Chrome in Applications, and a password-authenticated local dashboard session |
 | Account-specific OAuth and probe routing | Configure account proxy bindings in Settings; credentials belong to your installation |
-| Request-log links that open the originating Orca terminal | Orca CLI on the server's PATH; the caller supplies `x-orca-terminal-handle`; local dashboard access |
+| Request-log links that open the originating Orca terminal | Orca CLI on the server's PATH; the caller supplies `x-orca-terminal-handle`; local dashboard security:write permission and recent verification |
 | Native inline Responses replay | Opt-in with `CODEX_LB_NATIVE_INLINE_REPLAY_ENABLED=true` |
 | Protected account identities, fresh/bound quota cutoffs, and durable refresh fencing | Opt-in settings below; choose your own identity exclusions |
 | Measured serving identity and isolated native Codex dispatcher | Source checkout, macOS, a native Codex executable, and private dispatcher configuration |
@@ -25,9 +25,10 @@ The browser contract and operating notes are in
 | Updated host-model choice for internal probes and images | Included in the source; actual model availability still depends on the account |
 
 The bundled dispatcher matches the deployed generation `dispatcher-7cb22dd252d1`.
-Its three files are copied without implementation changes from
+Its three source files originated from
 [claude-mac-ops commit 83784e41](https://github.com/JanPlessow/claude-mac-ops/commit/83784e41c69d8e619e302e732ac34368c63dd819).
-This adds the current session history/resume, settlement, workspace trust, and
+Repository formatting and native-binding validation were adapted during integration.
+The bundled canonical regression suite covers the current session history/resume, settlement, workspace trust, and
 optional personal-settings/hook inheritance support to the older dispatcher
 that was captured in the LB snapshot. Optional `CODEX_POOL_PERSONAL_DIR` files
 and Orca hook files belong to the operator; they are not included here.
@@ -43,7 +44,7 @@ Install Git, Python 3.13 or newer, `uv`, and Bun 1.3.14. Use a fresh data direct
 for the first installation:
 
 ```sh
-git clone --branch chore/publish-local-features-2026-10-29 --single-branch \
+git clone --branch main --single-branch \
   https://github.com/JanPlessow/codex-lb.git
 cd codex-lb
 uv sync --frozen --dev
@@ -77,7 +78,8 @@ restart using the same data directory:
 CODEX_LB_LOCAL_BROWSER_ENABLED=true
 ```
 
-Use the local dashboard and sign in with its password. In Accounts,
+Use the local dashboard and sign in with its password. Browser actions require
+`security:write` (the administrator preset) and the dashboard's recent-verification policy. In Accounts,
 Re-authenticate opens the selected account's persistent profile. Add account
 allows explicit Direct or proxy-pool selection. Each managed proxy pool must
 have exactly one active endpoint. Enter your proxy credentials through the

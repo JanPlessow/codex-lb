@@ -48,6 +48,7 @@ def test_projection_preserves_every_value_except_top_level_item_ids():
     source = inline()
     before = deepcopy(source)
     result = project_native_inline_payload(source)
+    assert result is not None
     expected = deepcopy(source)
     for item in expected["input"]:
         item.pop("id")
@@ -60,6 +61,7 @@ def test_disabled_tools_preserve_complete_native_history_without_restoring_tools
     source = inline()
     source["input"][0]["tools"] = []
     result = project_native_inline_payload(source)
+    assert result is not None
     expected = deepcopy(source)
     for item in expected["input"]:
         item.pop("id")
@@ -146,7 +148,8 @@ def test_stream_entry_rejects_opaque_state_before_lossy_wire_sanitization():
     ]
     request = ResponsesRequest.model_validate(payload)
     # Reproduce the upstream sanitizer's omission, then guard before that step.
-    assert len(request.to_replay_safety_payload()["input"]) == 2
+    projected_input = request.to_replay_safety_payload()["input"]
+    assert isinstance(projected_input, list) and len(projected_input) == 2
     assert normalize_native_inline_request(request) is None
 
 
@@ -157,6 +160,8 @@ def test_stream_entry_rejects_input_loss_during_model_validation():
     payload = inline()
     payload["input"][1]["reasoning_content"] = "opaque interleaved state"
     request = ResponsesRequest.model_validate(payload)
+    assert isinstance(request.input, list)
+    assert isinstance(request.input[1], dict)
     assert "reasoning_content" not in request.input[1]
     assert not request._codex_lb_native_inline_input_preserved
     assert normalize_native_inline_request(request) is None

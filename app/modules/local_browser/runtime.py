@@ -33,11 +33,13 @@ def profile_root() -> Path:
 class Listener:
     route: PersonaRoute
     server: asyncio.Server | None = None
+    valid: bool = True
     tasks: set[asyncio.Task[None]] = field(default_factory=set)
 
     async def revoke(self) -> None:
         # Keep the listener bound to this persona. Old browser processes must
         # never find another persona on the same port.
+        self.valid = False
         for task in tuple(self.tasks):
             task.cancel()
         await asyncio.gather(*tuple(self.tasks), return_exceptions=True)
@@ -78,6 +80,7 @@ class BrowserRuntime:
             from app.db.models import BrowserOAuthFlow, OAuthFlowState
             from app.modules.accounts.repository import AccountsRepository
             from app.modules.oauth.service import OauthService
+
             async with get_background_session() as session:
                 flow_ids = list(
                     (
@@ -107,9 +110,10 @@ class BrowserRuntime:
             if current is not None:
                 if current.route.port != route.port:
                     raise browser_error("Browser listener ownership changed unexpectedly.")
-                if current.route.fingerprint != route.fingerprint:
+                if not current.valid or current.route.fingerprint != route.fingerprint:
                     await current.revoke()
                     current.route = route
+                    current.valid = True
                 return
             listener = Listener(route)
             listener.server = await asyncio.start_server(
@@ -134,7 +138,9 @@ class BrowserRuntime:
                 if len(request) > 8192:
                     raise ValueError("Headers too large")
                 host = connect_target(request.split(b"\r\n", 1)[0].decode("ascii"))
-                current = listener.route
+                current = await load_persona_route(listener.route.persona_id)
+                if not listener.valid or current.fingerprint != listener.route.fingerprint:
+                    raise browser_error("The account browser route changed. Reopen it from the dashboard.")
                 upstream_reader, upstream_writer = await open_target(host, current.route)
                 writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 await writer.drain()

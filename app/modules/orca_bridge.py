@@ -6,10 +6,19 @@ from ipaddress import ip_address
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from app.core.auth.dependencies import require_dashboard_admin_access
+from app.core.auth.dashboard_access import Permission
+from app.core.auth.dependencies import require_dashboard_permission, validate_dashboard_session
 from app.core.middleware.orca_terminal import normalize_handle
+from app.core.socket_peer import raw_socket_peer_host
 
-router = APIRouter(prefix="/api/orca", tags=["dashboard"], dependencies=[Depends(require_dashboard_admin_access)])
+router = APIRouter(
+    prefix="/api/orca",
+    tags=["dashboard"],
+    dependencies=[
+        Depends(validate_dashboard_session),
+        Depends(require_dashboard_permission(Permission.SECURITY_WRITE)),
+    ],
+)
 COMMAND_TIMEOUT_SECONDS = 10
 
 
@@ -49,7 +58,8 @@ async def _terminal_command(action: str, handle: str) -> None:
 @router.post("/terminal/switch")
 async def switch_terminal(req: TerminalRequest, request: Request) -> dict[str, bool]:
     try:
-        local = request.client is not None and ip_address(request.client.host).is_loopback
+        peer = raw_socket_peer_host(request)
+        local = peer is not None and ip_address(peer).is_loopback
     except ValueError:
         local = False
     if not local:

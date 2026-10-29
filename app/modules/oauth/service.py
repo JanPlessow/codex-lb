@@ -112,8 +112,8 @@ async def _oauth_route(*, account_id: str | None = None) -> ResolvedUpstreamRout
             raise OAuthError(exc.reason, str(exc), status_code=502) from exc
 
 
-async def _browser_callback_route(flow_id: str, account_id: str | None) -> ResolvedUpstreamRoute | None:
-    if not flow_id.startswith("browser-"):
+async def _browser_callback_route(flow_id: str | None, account_id: str | None) -> ResolvedUpstreamRoute | None:
+    if flow_id is None or not flow_id.startswith("browser-"):
         return await _oauth_route(account_id=account_id)
     from app.modules.local_browser.repository import browser_error, managed_flow_route
 
@@ -163,6 +163,8 @@ class OAuthStateStore:
         self._state_token_index: dict[str, str] = {}
         self._callback_server: OAuthCallbackServer | None = None
         self._callback_server_stop_task: asyncio.Task[None] | None = None
+        self._browser_flow_expiry_task: asyncio.Task[None] | None = None
+        self._browser_flow_expiry_changed = asyncio.Event()
 
     @property
     def lock(self) -> asyncio.Lock:
@@ -223,11 +225,27 @@ class OAuthStateStore:
         self.prune_expired_pending_browser_flows_locked()
         return any(flow.method == "browser" and flow.status == "pending" for flow in self._flows.values())
 
+    def next_pending_browser_flow_expiry_locked(self) -> float | None:
+        return min(
+            (
+                flow.expires_at
+                for flow in self._flows.values()
+                if flow.method == "browser" and flow.status == "pending" and flow.expires_at is not None
+            ),
+            default=None,
+        )
+
     async def reset(self) -> None:
         server: OAuthCallbackServer | None = None
         async with self._lock:
+            expiry_task = self._browser_flow_expiry_task
+            self._browser_flow_expiry_task = None
+            if expiry_task is not None:
+                expiry_task.cancel()
             server = self._cleanup_locked()
             self._state = OAuthState(status="idle")
+        if expiry_task is not None:
+            await asyncio.gather(expiry_task, return_exceptions=True)
         if server is not None:
             await server.stop()
 
@@ -241,6 +259,7 @@ class OAuthStateStore:
             self._callback_server = None
         self._flows.clear()
         self._state_token_index.clear()
+        self._browser_flow_expiry_changed.set()
         return server
 
     def prune_terminal_flows_locked(self) -> None:
@@ -316,7 +335,7 @@ class OAuthCallbackServer:
     async def start(self) -> None:
         app = web.Application()
         app.router.add_get("/auth/callback", self._handler)
-        self._runner = web.AppRunner(app)
+        self._runner = web.AppRunner(app, access_log=None)
         await self._runner.setup()
         self._site = web.TCPSite(self._runner, self._host, self._port)
         await self._site.start()
@@ -465,6 +484,8 @@ class OauthService:
             # Durable pending: hydrate a flow this replica never saw.
             if local is None:
                 self._store.remember_flow_locked(self._record_to_state(record))
+            if record.method == "browser":
+                self._ensure_browser_flow_expiry_task_locked()
         return record
 
     async def start_oauth(self, request: OauthStartRequest) -> OauthStartResponse:
@@ -612,6 +633,9 @@ class OauthService:
                         "browser_callback_unavailable", "Port 1455 is in use. Close the other sign-in and retry."
                     ) from None
 
+        async with self._store.lock:
+            self._ensure_browser_flow_expiry_task_locked()
+
         return OauthStartResponse(
             flow_id=flow_id,
             method="browser",
@@ -653,6 +677,36 @@ class OauthService:
                 async with self._store.lock:
                     if self._store._callback_server_stop_task is stop_task:
                         self._store._callback_server_stop_task = None
+
+    def _ensure_browser_flow_expiry_task_locked(self) -> None:
+        """Wake the store's single timer, including for an earlier hydrated TTL."""
+        self._store._browser_flow_expiry_changed.set()
+        task = self._store._browser_flow_expiry_task
+        if task is None or task.done():
+            self._store._browser_flow_expiry_task = asyncio.create_task(self._expire_browser_flows())
+
+    async def _expire_browser_flows(self) -> None:
+        """Run existing idle-listener cleanup at pending browser deadlines."""
+        current = asyncio.current_task()
+        changed = self._store._browser_flow_expiry_changed
+        try:
+            while True:
+                async with self._store.lock:
+                    expires_at = self._store.next_pending_browser_flow_expiry_locked()
+                    if expires_at is None:
+                        self._store._browser_flow_expiry_task = None
+                        return
+                    changed.clear()
+                try:
+                    await asyncio.wait_for(changed.wait(), timeout=max(0, expires_at - time.time()))
+                except TimeoutError:
+                    await self._stop_callback_server_if_idle()
+        except Exception:
+            logger.exception("Browser OAuth expiry cleanup failed")
+        finally:
+            async with self._store.lock:
+                if self._store._browser_flow_expiry_task is current:
+                    self._store._browser_flow_expiry_task = None
 
     async def manual_callback(self, callback_url: str, flow_id: str | None = None) -> ManualCallbackResponse:
         """Process an OAuth callback URL pasted manually by the user.
@@ -955,8 +1009,8 @@ class OauthService:
         state.poll_task = asyncio.create_task(self._poll_device_tokens(state.flow_id, poll_context))
         return True
 
-    async def _persist_browser_tokens(self, tokens: OAuthTokens, flow: OAuthFlowRecord) -> None:
-        if flow.flow_id.startswith("browser-"):
+    async def _persist_browser_tokens(self, tokens: OAuthTokens, flow: OAuthFlowRecord | OAuthState) -> None:
+        if flow.flow_id is not None and flow.flow_id.startswith("browser-"):
             await self._persist_tokens(
                 tokens, intended_account_id=flow.intended_account_id, browser_flow_id=flow.flow_id
             )

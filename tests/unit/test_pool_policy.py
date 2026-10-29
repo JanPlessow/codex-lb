@@ -143,7 +143,6 @@ async def test_import_denial_precedes_database_write(policy, method):
 @pytest.mark.parametrize(
     "bad",
     [
-        None,
         usage(98),
         usage(100),
         usage(float("nan")),
@@ -198,6 +197,7 @@ async def test_authoritative_selection_filters_cutoff_and_protected_then_recover
     repo = _StubUsageRepository(primary, secondary)
     balancer = LoadBalancer(lambda: _repo_factory(_StubAccountsRepository(accounts), repo))
     first = await balancer.select_account(lease_kind="stream")
+    assert first.account is not None
     assert first.account.id == accounts[2].id
     await balancer.release_account_lease(first.lease)
     primary[accounts[2].id].used_percent = 98
@@ -207,5 +207,11 @@ async def test_authoritative_selection_filters_cutoff_and_protected_then_recover
     # An actual new observation restores eligibility on the same balancer.
     secondary[accounts[1].id].used_percent = 0
     recovered = await balancer.select_account(lease_kind="stream")
+    assert recovered.account is not None
     assert recovered.account.id == accounts[1].id
     await balancer.release_account_lease(recovered.lease)
+
+
+@pytest.mark.parametrize("primary,secondary", [(None, None), (usage(), None), (None, usage())])
+def test_pool_requires_at_least_one_current_window(policy, primary, secondary):
+    assert pool_policy.quota_admits(primary, secondary, bound=False) is (primary is not None or secondary is not None)

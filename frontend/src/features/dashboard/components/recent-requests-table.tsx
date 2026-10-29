@@ -43,7 +43,7 @@ import {
   type RequestLogColumnWidths,
 } from "@/features/dashboard/request-log-columns";
 import type { AccountSummary, RequestLog } from "@/features/dashboard/schemas";
-import { useAuthStore } from "@/features/auth/hooks/use-auth";
+import { usePermission } from "@/features/auth/hooks/use-auth";
 import { useDateDisplayFormatStore } from "@/hooks/use-date-format";
 import { cn } from "@/lib/utils";
 import { REQUEST_STATUS_LABELS } from "@/utils/constants";
@@ -322,7 +322,8 @@ export function RecentRequestsTable({
   const [selectedRequest, setSelectedRequest] = useState<RequestLog | null>(null);
   const [orcaState, setOrcaState] = useState<"idle" | "loading" | "success" | "error">("idle");
   const blurred = usePrivacyStore((s) => s.blurred);
-  const isAdmin = useAuthStore((state) => state.role === "admin");
+  // User agent, client IP and the archive panel are served only with `conversations:read`.
+  const canReadConversations = usePermission("conversations:read");
   const dateDisplayFormat = useDateDisplayFormatStore((state) => state.dateDisplayFormat);
   const selectedRequestCostSummary = formatRequestCostSummary(selectedRequest, t);
   const visibleColumns = configuredVisibleColumns ?? ALL_REQUEST_LOG_COLUMNS;
@@ -650,7 +651,7 @@ export function RecentRequestsTable({
                   ) : null}
                 </div>
               ) : null}
-              {isAdmin ? (
+              {canReadConversations ? (
                 <RequestDetailField
                   label={t("dashboard.requestDetails.userAgent")}
                   value={selectedRequest?.useragent ?? "—"}
@@ -659,7 +660,7 @@ export function RecentRequestsTable({
                   compactCopy
                 />
               ) : null}
-              {isAdmin ? (
+              {canReadConversations ? (
                 <div className="grid gap-3 sm:grid-cols-2">
                   <RequestDetailField
                     label={t("dashboard.requestDetails.clientIp")}
@@ -706,7 +707,7 @@ export function RecentRequestsTable({
               ) : null}
             </div>
 
-            {isAdmin ? (
+            {canReadConversations ? (
               <RequestArchivePanel
                 requestId={selectedRequest?.archiveRequestId ?? selectedRequest?.requestId}
                 requestedAt={selectedRequest?.requestedAt}
