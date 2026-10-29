@@ -51,3 +51,6 @@ pool admission stayed closed, sealed settings returned 409, and missing request
 identity returned 409. No operator accounts or credentials were copied. The
 full cloud suite, PostgreSQL lane, and macOS dispatcher lane remain required
 before merge.
+
+
+Cloud CI exposed migration replay over existing browser tables, stale routed-probe test doubles, collection-time quota samples expiring during the full suite, and Orca scope copying before shared request state existed. The integration repairs those failures with populated ledger-recovery coverage, per-test fresh samples, Linux-safe browser capability stubs, and existing route-level 413 regression tests. Inherited Rust and Python security findings are resolved by targeted dependency updates; supported compression and proxy features remain enabled, and advisory checks are not waived.

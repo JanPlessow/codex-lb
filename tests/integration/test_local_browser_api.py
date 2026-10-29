@@ -40,6 +40,8 @@ async def browser_client(app_instance, monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "local_browser_enabled", True)
     monkeypatch.setattr(settings, "data_dir", tmp_path)
     monkeypatch.setattr(browser_runtime, "capability_enabled", lambda: True)
+    monkeypatch.setattr("app.modules.local_browser.api.capability_enabled", lambda: True)
+    monkeypatch.setattr("app.modules.local_browser.service.capability_enabled", lambda: True)
     runtime = browser_runtime.BrowserRuntime()
     monkeypatch.setattr(browser_runtime, "_runtime", runtime)
     launch = AsyncMock()

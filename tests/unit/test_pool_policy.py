@@ -143,17 +143,18 @@ async def test_import_denial_precedes_database_write(policy, method):
 @pytest.mark.parametrize(
     "bad",
     [
-        usage(98),
-        usage(100),
-        usage(float("nan")),
-        usage(-1),
-        usage(age=181),
-        usage(age=-10),
-        usage(reset=-1),
+        {"used": 98},
+        {"used": 100},
+        {"used": float("nan")},
+        {"used": -1},
+        {"age": 181},
+        {"age": -10},
+        {"reset": -1},
     ],
 )
 @pytest.mark.parametrize("window", ["primary", "secondary"])
 def test_no_fresh_work_above_cutoff_or_without_current_evidence(policy, bad, window):
+    bad = usage(**bad)
     primary, secondary = (bad, usage()) if window == "primary" else (usage(), bad)
     assert not pool_policy.quota_admits(primary, secondary, bound=False)
 
@@ -212,6 +213,8 @@ async def test_authoritative_selection_filters_cutoff_and_protected_then_recover
     await balancer.release_account_lease(recovered.lease)
 
 
-@pytest.mark.parametrize("primary,secondary", [(None, None), (usage(), None), (None, usage())])
-def test_pool_requires_at_least_one_current_window(policy, primary, secondary):
+@pytest.mark.parametrize("has_primary,has_secondary", [(False, False), (True, False), (False, True)])
+def test_pool_requires_at_least_one_current_window(policy, has_primary, has_secondary):
+    primary = usage() if has_primary else None
+    secondary = usage() if has_secondary else None
     assert pool_policy.quota_admits(primary, secondary, bound=False) is (primary is not None or secondary is not None)

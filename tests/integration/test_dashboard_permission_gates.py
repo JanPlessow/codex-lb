@@ -464,3 +464,29 @@ async def test_local_host_actions_require_security_write(app_instance, async_cli
     response = await async_client.post(path, json=body)
     command.assert_not_awaited()
     _assert_permission_required(response, Permission.SECURITY_WRITE)
+
+
+@pytest.mark.asyncio
+async def test_orca_terminal_admin_uses_fixed_commands_and_rejects_forged_loopback(
+    app_instance, async_client, monkeypatch
+):
+    from httpx import ASGITransport
+
+    from app.modules import orca_bridge
+
+    _use_principal(app_instance, monkeypatch, admin_principal(auth_mode=DashboardAuthMode.STANDARD))
+    command = AsyncMock()
+    monkeypatch.setattr(orca_bridge, "_terminal_command", command)
+    response = await async_client.post("/api/orca/terminal/switch", json={"handle": "pane-1"})
+    assert response.status_code == 200, response.text
+    assert [call.args for call in command.await_args_list] == [("show", "pane-1"), ("switch", "pane-1")]
+    command.reset_mock()
+    async with AsyncClient(
+        transport=ASGITransport(app=app_instance, client=("203.0.113.8", 12345)),
+        base_url="http://testserver",
+    ) as remote:
+        response = await remote.post(
+            "/api/orca/terminal/switch", json={"handle": "pane-1"}, headers={"x-forwarded-for": "127.0.0.1"}
+        )
+    assert response.status_code == 403
+    command.assert_not_awaited()

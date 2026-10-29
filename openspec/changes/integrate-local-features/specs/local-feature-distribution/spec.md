@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Integration preserves deployed histories
-The integrated build SHALL upgrade fresh databases, current main databases, and prior local-feature databases to one Alembic head without rewriting deployed revisions or losing account credentials, browser ownership, or terminal references. The topology checker SHALL accept an old branch only when a descendant joins that branch and every base head; unjoined forks SHALL remain errors.
+The integrated build SHALL upgrade fresh databases, current main databases, and prior local-feature databases to one Alembic head without rewriting deployed revision identifiers or losing account credentials, browser ownership, or terminal references. The topology checker SHALL accept an old branch only when a descendant joins that branch and every base head; unjoined forks SHALL remain errors.
 
 #### Scenario: Both published histories converge
 - **WHEN** either published history upgrades
@@ -42,3 +42,17 @@ Native inline replay SHALL validate lossless input before projection and revalid
 - **WHEN** a native inline request receives a derived prompt cache key and its first account rejects quota before visible output
 - **THEN** an eligible second account receives the same projected wire payload
 - **AND** the API-key reservation settles exactly once.
+
+### Requirement: Migration replay preserves browser ownership
+An existing browser schema SHALL retain persona and flow rows when recovering a missing or rewound migration ledger. Replay SHALL create missing tables independently and reject incompatible ownership columns or constraints.
+
+#### Scenario: Existing persona survives ledger recovery
+- **WHEN** a populated database loses its migration ledger or its empty OAuth-flow table
+- **THEN** upgrade reaches the single head and preserves its persona association.
+
+### Requirement: Orca metadata preserves ingress protection
+Orca metadata middleware SHALL preserve shared ASGI request state while removing the private header. Oversized chunked requests SHALL retain the route's 413 error envelope.
+
+#### Scenario: Oversized chunked request crosses Orca metadata middleware
+- **WHEN** a dashboard or Responses request exceeds the body limit without a declared length
+- **THEN** the response is 413 with the payload_too_large code.

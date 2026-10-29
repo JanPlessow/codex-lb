@@ -25,6 +25,8 @@ class OrcaTerminalMiddleware:
             return
         values = [value for name, value in scope.get("headers", []) if name.lower() == HEADER]
         handle = normalize_handle(values[0].decode("latin-1")) if len(values) == 1 else None
+        # Receive wrappers and downstream handlers must share request state.
+        scope.setdefault("state", {})
         scope = dict(scope)
         scope["headers"] = [(name, value) for name, value in scope.get("headers", []) if name.lower() != HEADER]
         token = orca_terminal_handle.set(handle)

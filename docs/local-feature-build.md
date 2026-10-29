@@ -6,10 +6,10 @@ the local installation captured on October 29, 2026, with the fork's newer
 This source integration does not install or release a packaged application.
 
 The requirements for this distribution are in
-[Local feature distribution](../openspec/specs/local-feature-distribution/spec.md).
+[Local feature distribution](https://github.com/JanPlessow/codex-lb/blob/main/openspec/specs/local-feature-distribution/spec.md).
 The browser contract and operating notes are in
-[Local account browser](../openspec/specs/local-account-browser/spec.md) and its
-[context](../openspec/specs/local-account-browser/context.md).
+[Local account browser](https://github.com/JanPlessow/codex-lb/blob/main/openspec/specs/local-account-browser/spec.md) and its
+[context](https://github.com/JanPlessow/codex-lb/blob/main/openspec/specs/local-account-browser/context.md).
 
 ## Included features
 
@@ -189,7 +189,7 @@ identity by bypassing the validation.
 ## Verification
 
 The publication checks and their actual results are recorded in
-[distribution context](../openspec/specs/local-feature-distribution/context.md).
+[distribution context](https://github.com/JanPlessow/codex-lb/blob/main/openspec/specs/local-feature-distribution/context.md).
 Local source publication does not demonstrate installation or authenticated
 traffic on another computer. Complete your own account sign-in and a request
 through the selected route after setup.

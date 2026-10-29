@@ -17,7 +17,8 @@ HEAD = "20261029_000000_merge_local_feature_history"
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("start", ["base", MAIN, LOCAL])
-async def test_published_histories_upgrade_preserving_rows(tmp_path, start):
+@pytest.mark.parametrize("recovery", ["none", "ledger", "missing-flows"])
+async def test_published_histories_upgrade_preserving_rows(tmp_path, start, recovery):
     # CI's PostgreSQL lane supplies a dedicated test database; local runs get
     # one new SQLite file per history. No production database is consulted.
     configured = get_settings().database_url
@@ -53,6 +54,16 @@ async def test_published_histories_upgrade_preserving_rows(tmp_path, start):
                         )
                     )
         await to_thread.run_sync(lambda: run_upgrade(url, bootstrap_legacy=False))
+        if recovery != "none":
+            async with engine.begin() as connection:
+                if start == LOCAL:
+                    await connection.execute(
+                        text("INSERT INTO browser_oauth_flows VALUES ('flow', 'persona', 'synthetic')")
+                    )
+                await connection.execute(text("DROP TABLE alembic_version"))
+                if recovery == "missing-flows":
+                    await connection.execute(text("DROP TABLE browser_oauth_flows"))
+            await to_thread.run_sync(lambda: run_upgrade(url, bootstrap_legacy=True))
         state = await to_thread.run_sync(lambda: inspect_migration_state(url))
         assert state.current_revision == state.head_revision == HEAD
         assert await to_thread.run_sync(lambda: check_schema_drift(url)) == ()
@@ -67,5 +78,27 @@ async def test_published_histories_upgrade_preserving_rows(tmp_path, start):
                     assert (
                         await connection.execute(text("SELECT account_id FROM browser_personas WHERE id = 'persona'"))
                     ).scalar_one() == "preserved"
+                    if recovery == "ledger":
+                        assert (
+                            await connection.execute(
+                                text("SELECT persona_id FROM browser_oauth_flows WHERE flow_id = 'flow'")
+                            )
+                        ).scalar_one() == "persona"
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_browser_migration_rejects_incompatible_existing_table(tmp_path):
+    url = f"sqlite+aiosqlite:///{tmp_path / 'incompatible.db'}"
+    await to_thread.run_sync(
+        lambda: run_upgrade(url, "20260914_000000_add_orca_terminal_handle", bootstrap_legacy=False)
+    )
+    engine = create_async_engine(url)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(text("CREATE TABLE browser_personas (id VARCHAR PRIMARY KEY)"))
+        with pytest.raises(RuntimeError, match="Incompatible existing browser_personas"):
+            await to_thread.run_sync(lambda: run_upgrade(url, LOCAL, bootstrap_legacy=False))
     finally:
         await engine.dispose()
