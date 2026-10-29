@@ -205,6 +205,7 @@ export const RequestLogSchema = z.object({
   apiKeyName: z.string().nullable().optional().default(null),
   apiKeyId: z.string().nullable().optional().default(null),
   requestId: z.string(),
+  orcaTerminalHandle: z.string().nullable().optional(),
   archiveRequestId: z.string().nullable().optional(),
   requestKind: z.enum(["normal", "warmup", "limit_warmup", "prewarm", "compaction", "realtime_live"]).optional().default("normal"),
   connectionRequestKind: z.enum(["normal", "prewarm"]).nullable().optional(),

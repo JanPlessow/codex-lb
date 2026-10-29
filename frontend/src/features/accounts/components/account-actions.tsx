@@ -32,6 +32,7 @@ export type AccountActionsProps = {
   account: AccountSummary;
   busy: boolean;
   readOnly?: boolean;
+  managedBrowser?: boolean;
   onPause: (accountId: string) => void;
   onResume: (accountId: string) => void;
   onProbe: (accountId: string) => void;
@@ -52,6 +53,7 @@ export function AccountActions({
   account,
   busy,
   readOnly = false,
+  managedBrowser = false,
   onPause,
   onResume,
   onProbe,
@@ -165,7 +167,7 @@ export function AccountActions({
           </Button>
         )}
 
-        {showOperatorRecoveryAction ? (
+        {(showOperatorRecoveryAction || managedBrowser) ? (
           <Button
             type="button"
             size="sm"

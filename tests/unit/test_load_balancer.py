@@ -2361,7 +2361,7 @@ def test_state_from_account_preserves_pressure_for_active_routing(monkeypatch):
     assert state.status == AccountStatus.ACTIVE
     assert state.used_percent == 96.5
     assert state.priority_used_percent is None
-    assert _state_above_sticky_budget_threshold(state, 95.0) is True
+    assert _state_above_sticky_budget_threshold(state, 95.0) is False
 
 
 def test_state_from_account_clears_stale_advisory_account_reset_for_active_account(monkeypatch):

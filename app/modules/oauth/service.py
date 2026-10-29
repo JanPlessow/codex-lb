@@ -89,20 +89,40 @@ async def _has_active_proxy_bindings(session: AsyncSession) -> bool:
         return False
 
 
-async def _oauth_route() -> ResolvedUpstreamRoute | None:
+async def _oauth_route(*, account_id: str | None = None) -> ResolvedUpstreamRoute | None:
     async with get_background_session() as session:
-        strict = await _has_active_proxy_bindings(session)
+        if account_id is not None and await session.get(Account, account_id) is None:
+            raise OAuthError(
+                "oauth_account_not_found",
+                "The account selected for reauthentication no longer exists.",
+                status_code=404,
+            )
+        strict = await _has_active_proxy_bindings(session) if account_id is None else False
         try:
             return await resolve_upstream_route(
                 session,
-                account_id=None,
+                account_id=account_id,
                 operation="oauth",
-                scope="bootstrap",
-                # strict=True forces default-pool requirement; None defers to dashboard setting
+                scope="account" if account_id is not None else "bootstrap",
+                # Untargeted bootstrap retains its default-pool guard. Targeted
+                # flows use the selected account's binding or default policy.
                 strict=strict or None,
             )
         except UpstreamProxyRouteError as exc:
             raise OAuthError(exc.reason, str(exc), status_code=502) from exc
+
+
+async def _browser_callback_route(flow_id: str | None, account_id: str | None) -> ResolvedUpstreamRoute | None:
+    if flow_id is None or not flow_id.startswith("browser-"):
+        return await _oauth_route(account_id=account_id)
+    from app.modules.local_browser.repository import browser_error, managed_flow_route
+
+    if not get_settings().local_browser_enabled:
+        raise browser_error("Local account browsers are disabled. Start sign-in again after enabling them.")
+    managed, route = await managed_flow_route(flow_id)
+    if not managed:
+        raise browser_error("The browser route association is missing. Start sign-in again.")
+    return route
 
 
 class ReauthSeatMismatchError(Exception):
@@ -555,10 +575,12 @@ class OauthService:
                 return OauthCompleteResponse(status="success")
             return OauthCompleteResponse(status="pending")
 
-    async def _start_browser_flow(self, *, intended_account_id: str | None = None) -> OauthStartResponse:
+    async def _start_browser_flow(
+        self, *, intended_account_id: str | None = None, managed_browser: bool = False
+    ) -> OauthStartResponse:
         await self._wait_for_callback_server_stop()
 
-        flow_id = secrets.token_urlsafe(12)
+        flow_id = ("browser-" if managed_browser else "") + secrets.token_urlsafe(12)
         code_verifier, code_challenge = generate_pkce_pair()
         state_token = secrets.token_urlsafe(16)
         authorization_url = build_authorization_url(state=state_token, code_challenge=code_challenge)
@@ -605,6 +627,11 @@ class OauthService:
                 async with self._store.lock:
                     if self._store._callback_server is callback_server:
                         self._store._callback_server = None
+                if managed_browser:
+                    await self._finalize_callback_error("Local sign-in callback is unavailable.", flow_id=flow_id)
+                    raise OAuthError(
+                        "browser_callback_unavailable", "Port 1455 is in use. Close the other sign-in and retry."
+                    ) from None
 
         async with self._store.lock:
             self._ensure_browser_flow_expiry_task_locked()
@@ -615,6 +642,41 @@ class OauthService:
             authorization_url=authorization_url,
             callback_url=OAUTH_REDIRECT_URI,
         )
+
+    async def resume_browser_callback(self, flow_id: str) -> None:
+        """Restore the local callback listener when reopening a durable flow."""
+        await self._reconcile_flow_from_durable(flow_id=flow_id)
+        while True:
+            async with self._store.lock:
+                flow = self._store.get_flow_locked(flow_id)
+                if flow is None or flow.status != "pending" or flow.method != "browser":
+                    raise OAuthError("browser_flow_expired", "This sign-in has expired. Start again from the account.")
+                stop_task = self._store._callback_server_stop_task
+                server = self._store._callback_server
+                if stop_task is None:
+                    if server is not None:
+                        return
+                    callback_server = OAuthCallbackServer(
+                        self._handle_callback, host=get_settings().oauth_callback_host, port=OAUTH_CALLBACK_PORT
+                    )
+                    try:
+                        await callback_server.start()
+                    except OSError:
+                        await callback_server.stop()
+                        raise OAuthError(
+                            "browser_callback_unavailable", "Port 1455 is in use. Close the other sign-in and retry."
+                        ) from None
+                    self._store._callback_server = callback_server
+                    return
+            # Shutdown can begin while the durable flow is being hydrated.
+            # Finish it outside the store lock, then reserve a new listener.
+            if server is not None:
+                await self._finish_callback_server_stop(server, stop_task)
+            else:
+                await asyncio.shield(stop_task)
+                async with self._store.lock:
+                    if self._store._callback_server_stop_task is stop_task:
+                        self._store._callback_server_stop_task = None
 
     def _ensure_browser_flow_expiry_task_locked(self) -> None:
         """Wake the store's single timer, including for an earlier hydrated TTL."""
@@ -704,14 +766,14 @@ class OauthService:
             return ManualCallbackResponse(status="error", error_message=message)
 
         try:
-            route = await _oauth_route()
+            route = await _browser_callback_route(flow.flow_id, flow.intended_account_id)
             tokens = await exchange_authorization_code(
                 code=code,
                 code_verifier=verifier,
                 route=route,
                 allow_direct_egress=route is None,
             )
-            await self._persist_tokens(tokens, intended_account_id=flow.intended_account_id)
+            await self._persist_browser_tokens(tokens, flow)
             await self._set_success(flow.flow_id)
             asyncio.create_task(self._stop_callback_server_if_idle())
             return ManualCallbackResponse(status="success")
@@ -743,7 +805,7 @@ class OauthService:
     async def _start_device_flow(self, *, intended_account_id: str | None = None) -> OauthStartResponse:
         flow_id = secrets.token_urlsafe(12)
         try:
-            route = await _oauth_route()
+            route = await _oauth_route(account_id=intended_account_id)
             device = await request_device_code(route=route, allow_direct_egress=route is None)
         except OAuthError as exc:
             await self._set_error(exc.message)
@@ -846,14 +908,14 @@ class OauthService:
             return self._html_response(_error_html("Invalid OAuth callback."))
 
         try:
-            route = await _oauth_route()
+            route = await _browser_callback_route(flow.flow_id, flow.intended_account_id)
             tokens = await exchange_authorization_code(
                 code=code,
                 code_verifier=verifier,
                 route=route,
                 allow_direct_egress=route is None,
             )
-            await self._persist_tokens(tokens, intended_account_id=flow.intended_account_id)
+            await self._persist_browser_tokens(tokens, flow)
             await self._set_success(flow.flow_id)
             html = _success_html()
         except OAuthError as exc:
@@ -892,7 +954,7 @@ class OauthService:
         consumed = False
         try:
             while time.time() < context.expires_at:
-                route = await _oauth_route()
+                route = await _oauth_route(account_id=context.intended_account_id)
                 tokens = await exchange_device_token(
                     device_auth_id=context.device_auth_id,
                     user_code=context.user_code,
@@ -947,11 +1009,20 @@ class OauthService:
         state.poll_task = asyncio.create_task(self._poll_device_tokens(state.flow_id, poll_context))
         return True
 
+    async def _persist_browser_tokens(self, tokens: OAuthTokens, flow: OAuthFlowRecord | OAuthState) -> None:
+        if flow.flow_id is not None and flow.flow_id.startswith("browser-"):
+            await self._persist_tokens(
+                tokens, intended_account_id=flow.intended_account_id, browser_flow_id=flow.flow_id
+            )
+        else:
+            await self._persist_tokens(tokens, intended_account_id=flow.intended_account_id)
+
     async def _persist_tokens(
         self,
         tokens: OAuthTokens,
         *,
         intended_account_id: str | None = None,
+        browser_flow_id: str | None = None,
     ) -> None:
         claims = extract_id_token_claims(tokens.id_token)
         auth_claims = claims.auth or OpenAIAuthClaims()
@@ -985,13 +1056,16 @@ class OauthService:
         )
         if self._repo_factory:
             async with self._repo_factory() as repo:
-                saved = await self._save_oauth_account(repo, account, intended_account_id=intended_account_id)
+                saved = await self._save_oauth_account(
+                    repo, account, intended_account_id=intended_account_id, browser_flow_id=browser_flow_id
+                )
                 saved_id = saved.id
         else:
             saved = await self._save_oauth_account(
                 self._accounts_repo,
                 account,
                 intended_account_id=intended_account_id,
+                browser_flow_id=browser_flow_id,
             )
             saved_id = saved.id
 
@@ -1004,8 +1078,11 @@ class OauthService:
         account: Account,
         *,
         intended_account_id: str | None,
+        browser_flow_id: str | None = None,
     ) -> Account:
         if intended_account_id is None:
+            if browser_flow_id is not None:
+                return await repo.insert_browser_enrollment(account, browser_flow_id)
             return await repo.upsert_account_slot(
                 account,
                 preserve_unknown_workspace_duplicates=False,
@@ -1062,7 +1139,10 @@ class OauthService:
         if not workspace_matches or not seat_matches:
             raise ReauthSeatMismatchError(intended.email, account.email)
 
-        saved = await repo.replace_reauthorized(intended_account_id, account)
+        if browser_flow_id is not None:
+            saved = await repo.replace_reauthorized(intended_account_id, account, browser_flow_id=browser_flow_id)
+        else:
+            saved = await repo.replace_reauthorized(intended_account_id, account)
         if saved is None:
             raise ReauthSeatMismatchError(intended.email, account.email)
         return saved

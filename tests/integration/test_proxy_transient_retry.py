@@ -2045,3 +2045,70 @@ async def test_stream_reasoning_replay_rejection_counted_once_for_status_and_ter
         assert len(terminal) == 1
 
     assert counter.inc.call_count == expected_increments
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("variant", ["enabled", "disabled", "opaque", "turn_state", "file", "continuation"])
+async def test_native_inline_dispatch_and_retry_preserve_payload_and_ownership(
+    async_client, app_instance, monkeypatch, variant
+):
+    from app.core.config.settings import get_settings
+    from tests.unit.test_native_inline_replay import inline
+
+    monkeypatch.setattr(get_settings(), "native_inline_replay_enabled", variant != "disabled")
+    first_id = await _import_account(async_client, "native_a", "native-a@example.test")
+    await _import_account(async_client, "native_b", "native-b@example.test")
+    assert (await async_client.put("/api/settings", json={"apiKeyAuthEnabled": True})).status_code == 200
+    key_response = await async_client.post(
+        "/api/api-keys/",
+        json={
+            "name": "native-replay",
+            "limits": [{"limitType": "total_tokens", "limitWindow": "weekly", "maxValue": 1_000_000}],
+        },
+    )
+    assert key_response.status_code == 200
+    key = key_response.json()
+    headers = {"authorization": f"Bearer {key['key']}"}
+    payload = inline()
+    payload.update(model="gpt-5.1", stream=True)
+    if variant == "opaque":
+        payload["input"].append({"type": "reasoning", "encrypted_content": "opaque-state"})
+    elif variant == "continuation":
+        payload["previous_response_id"] = "resp_stored"
+    elif variant == "turn_state":
+        headers["x-codex-turn-state"] = "owned-turn"
+    elif variant == "file":
+        from app.modules.proxy.file_pin_repository import FileAccountPinRepository
+
+        async with SessionLocal() as session:
+            await FileAccountPinRepository(session).claim("file_native", first_id, ttl_seconds=3600)
+        payload["input"].append(
+            {"type": "message", "role": "user", "content": [{"type": "input_file", "file_id": "file_native"}]}
+        )
+    seen = []
+
+    async def fake_stream(payload, headers, access_token, account_id, **kwargs):
+        seen.append((account_id, payload.to_payload()))
+        if account_id == "native_a":
+            raise ProxyResponseError(429, openai_error("usage_limit_reached", "quota reached"), failure_phase="status")
+        yield _success_sse_event("resp_native_done")
+
+    monkeypatch.setattr(proxy_module, "core_stream_responses", fake_stream)
+    response = await async_client.post("/backend-api/codex/responses", json=payload, headers=headers)
+    if variant == "enabled":
+        assert response.status_code == 200, response.text
+        assert [account for account, _ in seen] == ["native_a", "native_b"]
+        assert seen[0][1] == seen[1][1]
+        assert all("id" not in item for item in seen[0][1]["input"])
+        assert "response.completed" in response.text
+    else:
+        assert all(account == "native_a" for account, _ in seen), response.text
+        assert "response.completed" not in response.text
+    async with SessionLocal() as session:
+        reservations = (
+            await session.scalars(select(ApiKeyUsageReservation).where(ApiKeyUsageReservation.api_key_id == key["id"]))
+        ).all()
+        assert all(reservation.status != "reserved" for reservation in reservations)
+        if variant == "enabled":
+            assert len(reservations) == 1
+            assert reservations[0].status == "finalized"

@@ -2,6 +2,7 @@ PYTEST_ARGS := -q -ra -o faulthandler_timeout=300 -o faulthandler_exit_on_timeou
 POSTGRES_TEST_DATABASE_URL ?= postgresql+asyncpg://codex_lb:codex_lb@127.0.0.1:5432/codex_lb
 INTEGRATION_CORE_SHARD_COUNT := 3
 POSTGRES_PYTEST_TARGETS := \
+	tests/integration/test_local_feature_migrations.py \
 	tests/integration/test_affinity_invite_migration.py \
 	tests/integration/test_affinity_identity_migration.py \
 	tests/integration/test_cost_backfill.py \

@@ -1,3 +1,6 @@
+import { useQuery } from "@tanstack/react-query";
+import { AccountBrowserDialog } from "@/features/accounts/components/account-browser-dialog";
+import { browserCapabilities, cancelAccountBrowser, reopenAccountBrowser } from "@/features/accounts/browser-api";
 import { Suspense, lazy, useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useSearchParams } from "react-router-dom";
@@ -39,6 +42,8 @@ export function AccountsPage() {
   const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
   const [accountSortMode, setAccountSortMode] = useState<AccountSortMode>(DEFAULT_ACCOUNT_SORT_MODE);
+  const browserCapability = useQuery({ queryKey: ["local-browser-capabilities"], queryFn: browserCapabilities, retry: false });
+  const managedBrowser = browserCapability.data?.enabled === true;
   const [oauthAccountId, setOauthAccountId] = useState<string | null>(null);
   const {
     accountsQuery,
@@ -165,6 +170,8 @@ export function AccountsPage() {
         <AlertMessage variant="error">{mutationError}</AlertMessage>
       ) : null}
 
+      {browserCapability.error && <AlertMessage variant="error">Account browser settings could not be loaded. Reload this page before signing in.</AlertMessage>}
+
       {!accountsQuery.data ? (
         <AccountsSkeleton />
       ) : (
@@ -190,9 +197,10 @@ export function AccountsPage() {
                 onOpenImport={() => importDialog.show()}
                 onOpenOauth={() => {
                   setOauthAccountId(null);
+                  oauth.reset();
                   oauthDialog.show();
                 }}
-                readOnly={!canWrite}
+                readOnly={!canWrite || !browserCapability.data}
               />
             </div>
           </div>
@@ -210,9 +218,13 @@ export function AccountsPage() {
               setAliasMutation.mutateAsync({ accountId, alias })
             }
             onDelete={(accountId) => deleteDialog.show(accountId)}
+            managedBrowser={managedBrowser}
             onReauth={() => {
-              setOauthAccountId(selectedAccount?.accountId ?? null);
+              if (!browserCapability.data || !selectedAccount) return;
+              setOauthAccountId(selectedAccount.accountId);
+              oauth.reset();
               oauthDialog.show();
+              if (managedBrowser) void oauth.start("browser", selectedAccount.accountId, { accountId: selectedAccount.accountId }).catch(() => undefined);
             }}
             onExportAuth={(accountId) => {
               void exportAuthMutation
@@ -265,7 +277,26 @@ export function AccountsPage() {
         }}
       />
 
-      <Suspense fallback={null}>
+      {managedBrowser ? (
+        <AccountBrowserDialog
+          key={oauthAccountId ?? "enrollment"}
+          open={oauthDialog.open}
+          accountId={oauthAccountId}
+          accountLabel={accounts.find((account) => account.accountId === oauthAccountId)?.email ?? "account"}
+          state={oauth.state}
+          pools={upstreamProxyQuery.data?.pools ?? []}
+          onStart={(request) => oauth.start("browser", request.accountId, request)}
+          onReopen={async () => {
+            if (oauth.state.flowId) await reopenAccountBrowser(oauth.state.flowId);
+          }}
+          onClose={async () => {
+            if (oauth.state.flowId && oauth.state.status === "pending") await cancelAccountBrowser(oauth.state.flowId);
+            oauth.reset();
+            oauthDialog.onOpenChange(false);
+            setOauthAccountId(null);
+          }}
+        />
+      ) : <Suspense fallback={null}>
         <OauthDialog
           open={oauthDialog.open}
           state={oauth.state}
@@ -286,7 +317,7 @@ export function AccountsPage() {
           }}
           onReset={oauth.reset}
         />
-      </Suspense>
+      </Suspense>}
 
       <AuthExportDialog
         open={exportDialog.open}

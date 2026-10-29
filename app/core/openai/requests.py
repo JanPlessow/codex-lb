@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Iterable, Mapping
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import cast
 
@@ -644,6 +645,22 @@ class ResponsesRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
     _codex_lb_client_reasoning_effort: str | None = PrivateAttr(default=None)
     _codex_lb_provider_reasoning_effort_materialized: bool = PrivateAttr(default=False)
+    _codex_lb_native_inline_input_preserved: bool = PrivateAttr(default=False)
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _record_native_inline_input_preservation(cls, data, handler):
+        raw_input = data.get("input") if isinstance(data, dict) else None
+        is_lite = (
+            isinstance(raw_input, list)
+            and bool(raw_input)
+            and isinstance(raw_input[0], dict)
+            and raw_input[0].get("type") == "additional_tools"
+        )
+        original = deepcopy(raw_input) if is_lite else None
+        result = handler(data)
+        result._codex_lb_native_inline_input_preserved = is_lite and original == result.input
+        return result
 
     @model_validator(mode="before")
     @classmethod

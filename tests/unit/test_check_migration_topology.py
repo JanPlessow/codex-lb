@@ -414,3 +414,36 @@ def test_missing_base_ref_skips_the_branch_fork_check(checker: ModuleType) -> No
     assert checker.base_ref_revisions("refs/heads/definitely-not-a-real-ref") is None
     _, summary = checker.run_all(versions_dir=VERSIONS_DIR, base_ref="refs/heads/definitely-not-a-real-ref")
     assert "base-ref check: skipped (ref unavailable)" in summary
+
+
+@pytest.mark.parametrize("join_all_heads", [True, False])
+def test_old_branch_requires_convergence_with_every_base_head(checker, tmp_path, join_all_heads):
+    versions = tmp_path / "versions"
+    root = _linear_fixture(checker, versions)
+    main_head = "20260918_000000_main_head"
+    other_head = "20260919_000000_other_main_head"
+    local = "20260914_000000_local_branch"
+    _write_revision(versions, main_head, root)
+    _write_revision(versions, other_head, root)
+    base = checker.load_graph(versions)
+    _write_revision(versions, local, root)
+    joined = (local, main_head, other_head) if join_all_heads else (local, main_head)
+    _write_revision(versions, "20261029_000000_merge", joined)
+    errors = checker.check_branch_fork(checker.load_graph(versions), base, "origin/main").errors
+    assert bool(errors) is not join_all_heads
+
+
+def test_three_historical_timestamp_members_must_all_converge(checker, tmp_path):
+    versions = tmp_path / "versions"
+    root = _linear_fixture(checker, versions)
+    members = (
+        "20260914_000000_add_scim_tokens",
+        "20260914_000000_drop_subscription_overflow_schema",
+        "20260914_000000_add_orca_terminal_handle",
+    )
+    for member in members:
+        _write_revision(versions, member, root)
+    _write_revision(versions, "20261029_000000_merge", members)
+    assert checker.check_timestamp_prefix_collisions(checker.load_graph(versions)).errors == []
+    _write_revision(versions, "20260914_000000_unmerged_fourth", root)
+    assert checker.check_timestamp_prefix_collisions(checker.load_graph(versions)).errors

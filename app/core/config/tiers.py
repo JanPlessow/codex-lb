@@ -35,6 +35,16 @@ TIERS: Final[tuple[Tier, ...]] = ("T0", "T1", "T2", "T3", "T4")
 # "may this value differ between two replicas / must it exist before the DB?".
 SETTING_TIERS: Final[dict[str, Tier]] = {
     "data_dir": "T0",
+    # Host capabilities and the sealed dispatcher contract differ by deployment.
+    "local_browser_enabled": "T1",
+    "native_inline_replay_enabled": "T4",
+    "pool_protected_emails": "T1",
+    "pool_protected_principals": "T1",
+    "pool_fresh_work_cutoff_percent": "T1",
+    "pool_bound_work_cutoff_percent": "T1",
+    "pool_usage_max_age_seconds": "T1",
+    "pool_refresh_replay_fence_enabled": "T1",
+    "pool_serving_contract_enabled": "T1",
     "database_url": "T0",
     "database_pool_size": "T1",
     "database_max_overflow": "T1",

@@ -43,6 +43,7 @@ from app.core.errors import (
 from app.core.errors import synthetic_stream_failure_event as response_failed_event
 from app.core.openai.parsing import _LIFECYCLE_EVENT_TYPES, classify_event_type, parse_sse_event_payload
 from app.core.openai.requests import ResponsesRequest
+from app.core.pool_policy import assert_pool_account
 from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError
 from app.core.utils.sse import CODEX_KEEPALIVE_FRAME as CODEX_KEEPALIVE_FRAME  # noqa: F401
 from app.core.utils.sse import format_sse_event, parse_sse_data_json
@@ -498,16 +499,15 @@ class _StreamingMixin(_StreamingRetryMixin):
         clock = clock_for(proxy)
         preserve_native_failure_lifecycle = not enforce_openai_sdk_contract and _is_native_codex_request(headers)
         account_id_value = account.id
+        assert_pool_account(account)
         access_token = proxy._encryptor.decrypt(account.access_token_encrypted)
         account_id = _header_account_id(account.chatgpt_account_id)
         model = payload.model
-        requested_service_tier = payload.service_tier
-        service_tier = requested_service_tier
+        service_tier = requested_service_tier = payload.service_tier
         actual_service_tier: str | None = None
         reasoning_effort = payload.reasoning.effort if payload.reasoning else None
         session_id = _owner_lookup_session_id_from_headers(headers)
-        # Keep selection/failover waits out of latency and TTFT, record them as
-        # queue time, then re-anchor after this attempt's admission wait.
+        # Record selection/failover waits as queue time, outside latency and TTFT.
         attempt_started_at = start = clock.monotonic()
         latency_queue_ms = max(0, int((start - request_started_at) * 1000))
         status, error_code, error_message = "success", None, None

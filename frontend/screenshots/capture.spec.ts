@@ -62,6 +62,7 @@ async function interceptApi(
     const url = new URL(route.request().url());
     const p = url.pathname;
 
+    if (p === "/api/local-browser/capabilities") return fulfill(route, { enabled: false });
     if (p === "/api/dashboard-auth/session") return fulfill(route, session);
     if (p === "/api/dashboard/overview") return fulfill(route, overview);
     if (p === "/api/request-logs/options") return fulfill(route, filterOptions);

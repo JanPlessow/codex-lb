@@ -9,6 +9,10 @@ import { useAccountQuotaDisplayStore } from "@/hooks/use-account-quota-display";
 import { ADMIN_PERMISSIONS, createUpstreamProxyAdmin } from "@/test/mocks/factories";
 import type { AccountSummary } from "@/features/accounts/schemas";
 
+vi.mock("@tanstack/react-query", () => ({
+  useQuery: vi.fn(() => ({ data: { enabled: false }, error: null })),
+}));
+
 vi.mock("@/features/accounts/hooks/use-accounts", () => ({
   useAccounts: vi.fn(),
   useAccountTrends: vi.fn(() => ({ data: null })),

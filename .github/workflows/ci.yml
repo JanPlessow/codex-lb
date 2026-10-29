@@ -876,6 +876,31 @@ jobs:
       - name: Build and check the flake
         run: nix flake check --print-build-logs
 
+  test-dispatcher-macos:
+    name: macOS dispatcher contracts
+    runs-on: macos-15
+    needs: changes
+    if: needs.changes.outputs.backend == 'true'
+    timeout-minutes: 10
+    env:
+      UV_CONCURRENT_DOWNLOADS: "2"
+      UV_CONCURRENT_BUILDS: "1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Set up uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884
+        with:
+          python-version: "3.13"
+          enable-cache: true
+          prune-cache: true
+      - name: Install dependencies
+        run: uv sync --frozen --dev
+      - name: Verify native dispatcher behavior
+        run: uv run pytest -q tests/unit/test_dispatcher.py --timeout=30 --timeout-method=thread
+
   ci-required:
     name: CI Required
     runs-on: ubuntu-24.04
@@ -896,6 +921,7 @@ jobs:
       - test-integration-core
       - test-integration-core-required
       - test-postgres
+      - test-dispatcher-macos
       - migration-check
       - migration-check-postgres
       - package

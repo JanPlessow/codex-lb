@@ -38,6 +38,7 @@ async function installMobileContainmentFixtures(page: Page, accounts = [
     }),
   ]): Promise<void> {
   const fixtures: Record<string, unknown> = {
+    "/api/local-browser/capabilities": { enabled: false },
     "/api/dashboard-auth/session": createDashboardAuthSession({ authenticated: true, passwordRequired: true }),
     "/api/dashboard/overview": createDashboardOverview({ accounts }),
     "/api/dashboard/projections": createDashboardProjections(),

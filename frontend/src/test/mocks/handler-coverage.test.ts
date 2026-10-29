@@ -48,6 +48,8 @@ const EXPECTED_ENDPOINTS = [
 	"POST /api/accounts/:accountId/usage-reset-credits/consume",
 	"POST /api/accounts/:accountId/export/auth",
 	"DELETE /api/accounts/:accountId",
+	// local account browser
+	"GET /api/local-browser/capabilities",
 	// oauth
 	"POST /api/oauth/start",
 	"GET /api/oauth/status",

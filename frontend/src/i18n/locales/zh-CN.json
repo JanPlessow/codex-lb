@@ -2036,5 +2036,9 @@
   "organisation.automaticAccounts.secret.warning": "请立即复制。它只显示这一次，之后无法再查看；如果丢失，请更换凭据。",
   "organisation.automaticAccounts.secret.copy": "复制凭据",
   "organisation.errors.scim_token_not_found": "该凭据已不存在。",
-  "accounts.importDialog.selectedFiles": "已选择的文件"
+  "accounts.importDialog.selectedFiles": "已选择的文件",
+  "dashboard.requestDetails.openInOrca": "在 Orca 中打开",
+  "dashboard.requestDetails.openingInOrca": "正在打开…",
+  "dashboard.requestDetails.openedInOrca": "已打开",
+  "dashboard.requestDetails.orcaUnavailable": "终端不可用"
 }

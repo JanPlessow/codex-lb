@@ -10,17 +10,20 @@ from uuid import uuid4
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import usage as usage_core
-from app.core.clients.proxy import stream_responses
+from app.core.clients.proxy import UpstreamProxyRouteTrace, stream_responses
 from app.core.config.dashboard_overrides import dashboard_overrides_bound, effective_settings
 from app.core.config.settings import get_settings
 from app.core.config.settings_cache import get_settings_cache
 from app.core.crypto import TokenEncryptor
 from app.core.openai.parsing import parse_sse_event
 from app.core.openai.requests import ResponsesRequest
+from app.core.pool_policy import assert_pool_account
 from app.core.resilience.toggles import bind_resilience_toggles
+from app.core.upstream_proxy import UpstreamProxyRouteError, resolve_upstream_route
 from app.core.utils.shared_future import _await_cleanup_deferring_cancellation
 from app.core.utils.time import naive_utc_to_epoch, utcnow
 from app.db.models import Account, AccountStatus, DashboardSettings, QuotaPlannerDecision
+from app.db.session import get_background_session
 from app.modules.accounts.repository import AccountsRepository
 from app.modules.api_keys.repository import ApiKeysRepository
 from app.modules.api_keys.service import (
@@ -259,6 +262,7 @@ class QuotaWarmupService:
                 )
 
         started = time.monotonic()
+        route_trace = UpstreamProxyRouteTrace()
         reservation_finalized = False
         try:
             # The probe must run under the same effective stream budget the
@@ -272,6 +276,7 @@ class QuotaWarmupService:
                     account=account,
                     model=resolved_model,
                     request_id=request_id,
+                    route_trace=route_trace,
                 )
             if reservation_id is not None:
                 settlement_cancellation = await _await_cleanup_deferring_cancellation(
@@ -300,6 +305,10 @@ class QuotaWarmupService:
                 error_code=None,
                 transport="quota_planner",
                 request_kind=WARMUP_REQUEST_KIND,
+                upstream_proxy_route_mode=route_trace.mode,
+                upstream_proxy_pool_id=route_trace.pool_id,
+                upstream_proxy_endpoint_id=route_trace.endpoint_id,
+                upstream_proxy_fallback_used=route_trace.fallback_used,
             )
             await self._try_record_warmup_effect(
                 account,
@@ -352,9 +361,14 @@ class QuotaWarmupService:
                 latency_ms=int((time.monotonic() - started) * 1000),
                 status="error",
                 error_code="warmup_failed",
+                upstream_proxy_fail_closed_reason=exc.reason if isinstance(exc, UpstreamProxyRouteError) else None,
                 error_message=str(exc),
                 transport="quota_planner",
                 request_kind=WARMUP_REQUEST_KIND,
+                upstream_proxy_route_mode=route_trace.mode,
+                upstream_proxy_pool_id=route_trace.pool_id,
+                upstream_proxy_endpoint_id=route_trace.endpoint_id,
+                upstream_proxy_fallback_used=route_trace.fallback_used,
             )
             await self._try_record_warmup_effect(
                 account,
@@ -587,7 +601,14 @@ class QuotaWarmupService:
                 return True
         return False
 
-    async def _send_warmup_probe(self, *, account: Account, model: str, request_id: str) -> WarmupUsage:
+    async def _send_warmup_probe(
+        self,
+        *,
+        account: Account,
+        model: str,
+        request_id: str,
+        route_trace: UpstreamProxyRouteTrace | None = None,
+    ) -> WarmupUsage:
         payload = ResponsesRequest.model_validate(
             {
                 "model": model,
@@ -599,9 +620,23 @@ class QuotaWarmupService:
             }
         )
         headers = {"x-request-id": request_id, "user-agent": "codex-lb-quota-planner"}
+        assert_pool_account(account)
         access_token = self._encryptor.decrypt(account.access_token_encrypted)
         upstream_account_id = account.chatgpt_account_id
         usage = WarmupUsage(input_tokens=0, output_tokens=0, cached_input_tokens=0, reasoning_tokens=None)
+        async with get_background_session() as session:
+            route = await resolve_upstream_route(
+                session,
+                account_id=account.id,
+                operation="quota_warmup",
+                scope="account",
+                encryptor=self._encryptor,
+            )
+        if route_trace is not None:
+            if route is None:
+                route_trace.record_direct()
+            else:
+                route_trace.record(route=route, fallback_used=False)
         # C2-3 resilience toggles: background probe, no request snapshot to
         # inherit; take one here so the breaker gate follows the dashboard.
         bind_resilience_toggles(await get_settings_cache().get())
@@ -611,6 +646,9 @@ class QuotaWarmupService:
             access_token,
             upstream_account_id,
             raise_for_status=True,
+            route=route,
+            route_trace=route_trace,
+            allow_direct_egress=route is None,
             # The probe's own live signals must not pre-write fresh usage
             # rows: _record_warmup_effect measures the post-probe window via
             # its controlled refresh, which would otherwise skip as fresh

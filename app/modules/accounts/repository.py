@@ -15,12 +15,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import extract_id_token_claims, resolve_seat_identity
 from app.core.crypto import TokenEncryptor
+from app.core.pool_policy import assert_pool_account
 from app.core.upstream_proxy.cache import get_upstream_route_cache
 from app.core.utils.time import utcnow
 from app.db.account_identity_lock import advisory_lock_key, lock_postgresql_account_identities
 from app.db.models import (
     Account,
     AccountLimitWarmup,
+    AccountProxyBinding,
     AccountStatus,
     AccountUsageRollup,
     AdditionalUsageHistory,
@@ -317,6 +319,7 @@ class AccountsRepository:
         merge_by_chatgpt_identity: bool = False,
     ) -> Account:
         async with sqlite_writer_section():
+            assert_pool_account(account)
             return await self._upsert_unlocked(
                 account,
                 merge_by_email=merge_by_email,
@@ -443,9 +446,19 @@ class AccountsRepository:
     async def upsert_reauthorized(self, account: Account) -> Account:
         return await self.upsert_account_slot(account, preserve_unknown_workspace_duplicates=False)
 
-    async def replace_reauthorized(self, account_id: str, account: Account) -> Account | None:
+    async def replace_reauthorized(
+        self, account_id: str, account: Account, *, browser_flow_id: str | None = None
+    ) -> Account | None:
         """Replace credentials on the exact local row selected for reauthentication."""
+        assert_pool_account(account)
         async with sqlite_writer_section():
+            if browser_flow_id is not None:
+                from app.modules.local_browser.repository import browser_error, validate_managed_flow
+
+                await self._acquire_sqlite_merge_lock()
+                persona, _ = await validate_managed_flow(self._session, browser_flow_id)
+                if persona.account_id != account_id:
+                    raise browser_error("The sign-in belongs to another account.")
             if self._dialect_name() == "postgresql":
                 existing = await self._lock_postgresql_account_identity_membership(
                     account_id,
@@ -459,6 +472,42 @@ class AccountsRepository:
             await self._session.commit()
             await self._session.refresh(existing)
             return existing
+
+    async def insert_browser_enrollment(self, account: Account, flow_id: str) -> Account:
+        """Commit a new account and its network/browser ownership together."""
+        from app.modules.local_browser.repository import browser_error, validate_managed_flow
+
+        assert_pool_account(account)
+        async with sqlite_writer_section():
+            await self._acquire_sqlite_merge_lock()
+            persona, _ = await validate_managed_flow(self._session, flow_id)
+            if persona.state != "enrolling" or persona.account_id is not None:
+                raise browser_error("This enrollment has already been used.")
+            existing = await self._session.scalar(
+                select(Account.id)
+                .where(
+                    or_(
+                        Account.id == account.id,
+                        (func.lower(Account.email) == account.email.lower())
+                        & (Account.chatgpt_account_id == account.chatgpt_account_id),
+                    )
+                )
+                .limit(1)
+            )
+            if existing is not None or await self._account_by_slot_identity(account) is not None:
+                raise browser_error("This account already exists. Reauthenticate it from its account card.")
+            self._session.add(account)
+            await self._session.flush()
+            if persona.enrollment_pool_id is not None:
+                self._session.add(
+                    AccountProxyBinding(account_id=account.id, pool_id=persona.enrollment_pool_id, is_active=True)
+                )
+            persona.account_id = account.id
+            persona.state = "active"
+            persona.enrollment_pool_id = None
+            await self._session.commit()
+            await self._session.refresh(account)
+            return account
 
     async def _apply_account_replacement(self, target: Account, source: Account) -> None:
         """Apply freshly imported or reauthorized material onto an existing row.
@@ -482,6 +531,7 @@ class AccountsRepository:
         preserve_identity_slots: bool = False,
     ) -> Account:
         async with sqlite_writer_section():
+            assert_pool_account(account)
             return await self._upsert_account_slot_unlocked(
                 account,
                 preserve_unknown_workspace_duplicates=preserve_unknown_workspace_duplicates,

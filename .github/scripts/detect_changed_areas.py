@@ -25,6 +25,7 @@ FILTERS = {
     "backend": [
         ".github/scripts/**",
         "app/**",
+        "dispatcher/**",
         "tests/**",
         "config/**",
         "scripts/**",

@@ -22,6 +22,7 @@ from app.core.openai.model_registry_store import (
     persist_registry_snapshot,
     reconcile_model_registry_from_store,
 )
+from app.core.pool_policy import assert_pool_account
 from app.core.scheduling.leader_election_handle import get_leader_election as _get_leader_election
 from app.core.upstream_proxy import ResolvedUpstreamRoute, resolve_upstream_route
 from app.db.models import Account, AccountStatus
@@ -361,6 +362,7 @@ async def _fetch_models_with_transport_recovery(
     *,
     transport_recovery: _TransportRecoveryState,
 ) -> list[UpstreamModel]:
+    assert_pool_account(account)
     access_token = encryptor.decrypt(account.access_token_encrypted)
     account_id = account.chatgpt_account_id
     route = await _resolve_upstream_route_for_account(account, operation="model_discovery")
@@ -378,6 +380,7 @@ async def _fetch_models_with_transport_recovery(
 
         await _refresh_http_client_after_transport_error(account, exc)
         transport_recovery.attempted = True
+        assert_pool_account(account)
         access_token = encryptor.decrypt(account.access_token_encrypted)
         account_id = account.chatgpt_account_id
         route = await _resolve_upstream_route_for_account(account, operation="model_discovery")

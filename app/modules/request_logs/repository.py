@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import InstrumentedAttribute, make_transient_to_detached
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.core.middleware.orca_terminal import normalize_handle
+from app.core.middleware.orca_terminal import orca_terminal_handle as request_orca_terminal_handle
 from app.core.usage.logs import (
     CANCELLED_STATUS,
     CLIENT_DISCONNECT_ERROR_CODE,
@@ -1018,6 +1020,7 @@ class RequestLogsRepository:
         upstream_transport: str | None = None,
         api_key_id: str | None = None,
         session_id: str | None = None,
+        orca_terminal_handle: str | None = None,
         plan_type: str | None = None,
         source: str | None = None,
         useragent: str | None = None,
@@ -1069,6 +1072,7 @@ class RequestLogsRepository:
                 model_source_kind=model_source_kind,
                 api_key_id=api_key_id,
                 session_id=session_id,
+                orca_terminal_handle=normalize_handle(orca_terminal_handle) or request_orca_terminal_handle.get(),
                 request_id=resolved_request_id,
                 archive_request_id=resolved_archive_request_id,
                 model=model,

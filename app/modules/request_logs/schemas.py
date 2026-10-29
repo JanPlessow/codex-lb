@@ -25,6 +25,7 @@ class RequestLogEntry(DashboardModel):
     api_key_id: str | None = None
     api_key_name: str | None = None
     request_id: str
+    orca_terminal_handle: str | None = None
     archive_request_id: str | None = None
     request_kind: str = "normal"
     connection_request_kind: str | None = None

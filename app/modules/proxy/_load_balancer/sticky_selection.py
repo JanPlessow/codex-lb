@@ -1632,7 +1632,17 @@ async def _select_with_stickiness(
 
             burn_first_reallocate = pinned.routing_policy != ROUTING_POLICY_BURN_FIRST
             if burn_first_reallocate:
-                burn_first_candidates = [state for state in states if state.routing_policy == ROUTING_POLICY_BURN_FIRST]
+                best_tier_states = _best_health_tier_states(states)
+                burn_first_candidates = [
+                    state
+                    for state in best_tier_states
+                    if state.routing_policy == ROUTING_POLICY_BURN_FIRST
+                    and not _state_above_sticky_budget_threshold(
+                        state,
+                        budget_threshold_pct,
+                        secondary_budget_threshold_pct,
+                    )
+                ]
                 if burn_first_candidates:
                     burn_first = select_account(
                         burn_first_candidates,
@@ -1646,6 +1656,8 @@ async def _select_with_stickiness(
                         ignore_standard_quota=ignore_standard_quota,
                     )
                     burn_first_reallocate = burn_first.account is not None
+                else:
+                    burn_first_reallocate = False
 
             # Isolation stage of the overload backoff: the pinned owner is a
             # *soft* mapping (hard continuity owners never reach this path)
@@ -1727,7 +1739,7 @@ async def _select_with_stickiness(
                 # retry below; the mutation block honors
                 # ``overload_reroute_request_local`` and keeps the mapping.
                 reallocate_sticky = True
-            elif not ((budget_pressured or rate_limit_far_away) and burn_first_reallocate):
+            elif not (budget_pressured or rate_limit_far_away or burn_first_reallocate):
                 pinned_result = select_account(
                     [pinned],
                     prefer_earlier_reset=prefer_earlier_reset_accounts,
@@ -1747,9 +1759,8 @@ async def _select_with_stickiness(
                         refresh_skip_deadline=pinned_refresh_skip_deadline,
                     )
             else:
-                # Reallocate only when a burn-first target exists and can
-                # currently be selected, avoiding sticky churn to
-                # ineligible targets.
+                # Quota pressure, distant rate limiting, and an eligible
+                # burn-first target independently permit reallocation.
                 # Before reallocating, check whether the pool has a
                 # meaningfully better candidate.  When every account
                 # is above the budget threshold, reallocating just
@@ -2209,8 +2220,26 @@ def _account_cap_error_message(lease_kind: AccountLeaseKind | None, caps: Accoun
     return "Account capacity is exhausted"
 
 
+def _measured_primary_used_percent(state: AccountState) -> float | None:
+    if state.priority_used_percent is not None:
+        return state.priority_used_percent
+    if state.measured_used_percent is not None:
+        return state.measured_used_percent
+    return state.used_percent
+
+
+def _measured_secondary_used_percent(state: AccountState, primary_used_percent: float | None) -> float | None:
+    if state.limit_scoped_usage and state.priority_secondary_used_percent is None:
+        return primary_used_percent
+    if state.priority_secondary_used_percent is not None:
+        return state.priority_secondary_used_percent
+    if state.measured_secondary_used_percent is not None:
+        return state.measured_secondary_used_percent
+    return state.secondary_used_percent
+
+
 def _state_above_budget_threshold(state: AccountState, budget_threshold_pct: float) -> bool:
-    used_percent = state.priority_used_percent if state.priority_used_percent is not None else state.used_percent
+    used_percent = _measured_primary_used_percent(state)
     return used_percent is not None and used_percent > budget_threshold_pct
 
 
@@ -2222,15 +2251,8 @@ def _state_above_sticky_budget_threshold(
     secondary_threshold = (
         budget_threshold_pct if secondary_budget_threshold_pct is None else secondary_budget_threshold_pct
     )
-    used_percent = state.priority_used_percent if state.priority_used_percent is not None else state.used_percent
-    if state.limit_scoped_usage and state.priority_secondary_used_percent is None:
-        secondary_used_percent = used_percent
-    else:
-        secondary_used_percent = (
-            state.priority_secondary_used_percent
-            if state.priority_secondary_used_percent is not None
-            else state.secondary_used_percent
-        )
+    used_percent = _measured_primary_used_percent(state)
+    secondary_used_percent = _measured_secondary_used_percent(state, used_percent)
     return (used_percent is not None and used_percent > budget_threshold_pct) or (
         secondary_used_percent is not None and secondary_used_percent > secondary_threshold
     )

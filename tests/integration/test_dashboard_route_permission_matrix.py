@@ -58,6 +58,10 @@ DASHBOARD_AUTH_GATED: dict[tuple[str, str], PermissionRequirement] = {
 
 #: Routes whose permission requirement is part of the security contract.
 EXPECTED_REQUIREMENTS: dict[tuple[str, str], PermissionRequirement] = {
+    ("POST", "/api/local-browser/start"): PermissionRequirement(Permission.SECURITY_WRITE),
+    ("POST", "/api/local-browser/reopen"): PermissionRequirement(Permission.SECURITY_WRITE),
+    ("POST", "/api/local-browser/cancel"): PermissionRequirement(Permission.SECURITY_WRITE),
+    ("POST", "/api/orca/terminal/switch"): PermissionRequirement(Permission.SECURITY_WRITE),
     ("POST", "/api/accounts/{account_id}/export/auth"): PermissionRequirement(Permission.ACCOUNTS_EXPORT),
     ("GET", "/api/audit-logs"): PermissionRequirement(Permission.AUDIT_READ),
     ("GET", "/api/conversation-archive/records"): PermissionRequirement(Permission.CONVERSATIONS_READ),
@@ -137,6 +141,10 @@ EXPECTED_REQUIREMENTS: dict[tuple[str, str], PermissionRequirement] = {
 #: security field (handler-level, covered by ``test_step_up_auth.py``).
 STEP_UP_GATED: frozenset[tuple[str, str]] = frozenset(
     {
+        ("POST", "/api/local-browser/start"),
+        ("POST", "/api/local-browser/reopen"),
+        ("POST", "/api/local-browser/cancel"),
+        ("POST", "/api/orca/terminal/switch"),
         # ``POST /api/accounts/{id}/export`` and ``.../export/opencode-auth`` are the
         # retired predecessors that ``unified-auth-export`` forbids serving; only the
         # single export route below exists.

@@ -302,6 +302,7 @@ class Settings(BaseSettings):
     )
 
     data_dir: Path = Field(default_factory=_default_home_dir)
+    local_browser_enabled: bool = False
     database_url: str = DEFAULT_DATABASE_URL
     # Pool timeout and recycle are fixed constants in ``app/db/session.py``;
     # the background-task engine always derives its pool sizing from the two
@@ -378,6 +379,14 @@ class Settings(BaseSettings):
         default=7 * 24 * 60 * 60,
         gt=0,
     )
+    native_inline_replay_enabled: bool = False
+    pool_protected_emails: list[str] = Field(default_factory=list)
+    pool_protected_principals: list[str] = Field(default_factory=list)
+    pool_fresh_work_cutoff_percent: float | None = Field(default=None, gt=0, le=100)
+    pool_bound_work_cutoff_percent: float = Field(default=99.5, gt=0, le=100)
+    pool_usage_max_age_seconds: float = Field(default=180, gt=0)
+    pool_refresh_replay_fence_enabled: bool = False
+    pool_serving_contract_enabled: bool = False
     http_responses_session_bridge_instance_id: str = Field(default_factory=_default_http_bridge_instance_id)
     http_responses_session_bridge_instance_ring: Annotated[list[str], NoDecode] = Field(default_factory=list)
     http_responses_session_bridge_advertise_base_url: str | None = None

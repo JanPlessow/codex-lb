@@ -35,6 +35,7 @@ from app.modules.dashboard_users.service import DashboardUsersService
 from app.modules.firewall.repository import FirewallRepository
 from app.modules.firewall.service import FirewallRepositoryPort, FirewallService
 from app.modules.limit_warmup.repository import LimitWarmupRepository
+from app.modules.local_browser.service import BrowserService
 from app.modules.model_sources.repository import ModelSourcesRepository
 from app.modules.model_sources.service import ModelSourcesService
 from app.modules.oauth.service import OauthService
@@ -83,6 +84,11 @@ class UsageContext:
 @dataclass(slots=True)
 class OauthContext:
     service: OauthService
+
+
+@dataclass(slots=True)
+class LocalBrowserContext:
+    service: BrowserService
 
 
 @dataclass(slots=True)
@@ -282,6 +288,11 @@ def get_oauth_context(
 ) -> OauthContext:
     accounts_repository = AccountsRepository(session)
     return OauthContext(service=OauthService(accounts_repository, repo_factory=_accounts_repo_context))
+
+
+def get_local_browser_context(session: AsyncSession = Depends(get_session)) -> LocalBrowserContext:
+    oauth = OauthService(AccountsRepository(session), repo_factory=_accounts_repo_context)
+    return LocalBrowserContext(service=BrowserService(session, oauth))
 
 
 def get_dashboard_auth_context(

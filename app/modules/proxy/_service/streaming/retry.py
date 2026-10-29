@@ -110,6 +110,7 @@ from app.modules.proxy.helpers import (
 )
 from app.modules.proxy.http_continuation import http_continuation_signal
 from app.modules.proxy.load_balancer import AccountLease, AccountSelection
+from app.modules.proxy.native_inline_replay import normalize_native_inline_request
 from app.modules.proxy.replay_safety import responses_payload_is_account_neutral_fresh_replay
 from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED, selection_failure_response
 
@@ -353,6 +354,17 @@ class _StreamingRetryMixin:
         request_id = ensure_request_id()
         start = clock.monotonic()
         base_settings = _facade().get_settings()
+        native_inline_payload = None
+        if (
+            getattr(base_settings, "native_inline_replay_enabled", False)
+            and request_transport == _REQUEST_TRANSPORT_HTTP
+            and _sticky_key_from_turn_state_header(headers) is None
+            and rewritten_file_account_id is None
+        ):
+            projected = normalize_native_inline_request(payload)
+            if projected is not None:
+                payload = projected
+                native_inline_payload = payload.to_replay_safety_payload()
         settings = await _facade().get_settings_cache().get()
         # C2-3 resilience toggles: resolved from this request's snapshot and
         # bound to the task so the upstream client gates its breaker the same
@@ -474,6 +486,11 @@ class _StreamingRetryMixin:
             sticky_threads_enabled=settings.sticky_threads_enabled,
             api_key=api_key,
         )
+        if native_inline_payload is not None:
+            # Affinity derives prompt_cache_key on the request. Revalidate the
+            # projected request after that mutation before sealing replay proof.
+            projected = normalize_native_inline_request(payload) if rewritten_file_account_id is None else None
+            native_inline_payload = projected.to_replay_safety_payload() if projected is not None else None
         turn_state_owner_account_id: str | None = None
         turn_state = _sticky_key_from_turn_state_header(headers)
         if turn_state is not None:
@@ -917,6 +934,8 @@ class _StreamingRetryMixin:
                         error_type="server_error",
                     ),
                 )
+            if native_inline_payload is not None and payload.to_replay_safety_payload() == native_inline_payload:
+                return False
             return required_account_id is None and not responses_payload_is_account_neutral_fresh_replay(
                 payload.to_replay_safety_payload()
             )

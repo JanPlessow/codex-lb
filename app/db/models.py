@@ -27,6 +27,7 @@ from sqlalchemy import Enum as SqlEnum
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 from app.core.auth.dashboard_session_ttl import DEFAULT_DASHBOARD_SESSION_TTL_SECONDS
+from app.core.utils.time import utcnow
 
 
 class Base(DeclarativeBase):
@@ -496,6 +497,7 @@ class RequestLog(Base):
     model_source_kind: Mapped[str | None] = mapped_column(String, nullable=True)
     api_key_id: Mapped[str | None] = mapped_column(String, nullable=True)
     session_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    orca_terminal_handle: Mapped[str | None] = mapped_column(String, nullable=True)
     request_id: Mapped[str] = mapped_column(String, nullable=False)
     archive_request_id: Mapped[str | None] = mapped_column(String, nullable=True)
     request_kind: Mapped[str] = mapped_column(
@@ -803,6 +805,31 @@ class OAuthFlowState(Base):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class BrowserPersona(Base):
+    """Local browser ownership; ports remain reserved even after revocation."""
+
+    __tablename__ = "browser_personas"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    account_id: Mapped[str | None] = mapped_column(
+        String, ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True, unique=True
+    )
+    state: Mapped[str] = mapped_column(String, nullable=False)
+    route_mode: Mapped[str] = mapped_column(String, nullable=False)
+    route_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    enrollment_pool_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    relay_port: Mapped[int] = mapped_column(Integer, nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, nullable=False)
+
+
+class BrowserOAuthFlow(Base):
+    __tablename__ = "browser_oauth_flows"
+
+    flow_id: Mapped[str] = mapped_column(String, primary_key=True)
+    persona_id: Mapped[str] = mapped_column(String, ForeignKey("browser_personas.id"), nullable=False)
+    route_fingerprint: Mapped[str] = mapped_column(String, nullable=False)
 
 
 class OAuthDeviceFlowSlot(Base):

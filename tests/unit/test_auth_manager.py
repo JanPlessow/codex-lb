@@ -166,6 +166,7 @@ class _DummyRepo:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("refresh_fence_mode")
 async def test_ensure_fresh_detached_refresh_owns_session_on_caller_cancel(monkeypatch):
     """Regression: a client disconnect during a forced token refresh must not
     strand a background-pool connection. The shielded refresh task must write
@@ -569,6 +570,7 @@ async def test_refresh_account_does_not_promote_unknown_workspace_into_taken_slo
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("refresh_fence_mode")
 async def test_refresh_account_converts_upstream_route_failure_to_refresh_error(monkeypatch):
     @asynccontextmanager
     async def fake_background_session() -> AsyncIterator[object]:
@@ -612,6 +614,7 @@ async def test_refresh_account_converts_upstream_route_failure_to_refresh_error(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("refresh_fence_mode")
 async def test_ensure_fresh_singleflights_concurrent_refreshes(monkeypatch):
     started = asyncio.Event()
     release = asyncio.Event()
@@ -1309,6 +1312,7 @@ async def test_refresh_preflight_adopts_reencrypted_same_material_before_exchang
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("refresh_fence_mode")
 async def test_refresh_preflight_adopts_peer_rotation_without_exchange(monkeypatch):
     """A genuinely newer peer token is adopted before any upstream exchange or
     token persistence attempt can consume or clobber refresh material."""
@@ -2284,6 +2288,7 @@ class _TokenCasPeerRotationInReadWriteGapRepo(_DummyRepo):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("refresh_fence_mode")
 async def test_refresh_adopts_peer_rotation_landing_in_read_write_gap(monkeypatch):
     """Regression (FINDING: no-unconditional-write / TOCTOU): a genuinely different
     peer rotation that lands AFTER the plaintext-confirming re-read but BEFORE the
@@ -2405,6 +2410,7 @@ class _TokenCasSamePlaintextInReadWriteGapRepo(_DummyRepo):
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("refresh_fence_mode")
 async def test_refresh_persists_new_token_when_same_plaintext_reencryption_lands_in_gap(monkeypatch):
     """Regression (no-unconditional-write, horn A): a same-plaintext re-encryption
     landing in the read->write gap misses the guarded compare-and-set, but the refresh
@@ -2617,6 +2623,7 @@ async def test_permanent_failure_status_cas_exhaustion_surfaces_transient_error(
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("refresh_fence_mode")
 async def test_claim_wait_is_capped_by_caller_refresh_budget(monkeypatch):
     """Regression: the shielded singleflight body outlives a cancelled caller,
     so a foreign refresh claim must not keep it polling for the full
@@ -2911,3 +2918,19 @@ async def test_refresh_account_requires_reauth_when_upstream_session_is_invalid(
     reason = repo.status_payload["deactivation_reason"]
     assert isinstance(reason, str)
     assert "re-login" in reason.lower() or "expired" in reason.lower()
+
+
+@pytest.fixture(params=[False, True])
+def refresh_fence_mode(request, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from app.core import pool_refresh_fence
+
+    monkeypatch.setattr(
+        pool_refresh_fence,
+        "get_settings",
+        lambda: SimpleNamespace(
+            data_dir=tmp_path,
+            pool_refresh_replay_fence_enabled=request.param,
+        ),
+    )

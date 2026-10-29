@@ -56,6 +56,7 @@ from app.core.upstream_proxy.cache import get_upstream_route_cache
 from app.db.models import Account, AccountProxyBinding, AccountStatus, ProxyEndpoint, ProxyPool, ProxyPoolMember
 from app.dependencies import SettingsContext, get_proxy_service_for_app, get_settings_context
 from app.modules.dashboard_users.break_glass import BreakGlassRequiresTotpError
+from app.modules.local_browser.runtime import get_browser_runtime
 from app.modules.proxy.account_cache import (
     clear_account_routing_unavailable,
     get_account_selection_cache,
@@ -527,6 +528,7 @@ async def add_upstream_proxy_pool_member(
     # Pool membership is a route-resolver input: clear + durably bump before
     # responding (same contract as the account-binding upsert).
     await get_upstream_route_cache().invalidate()
+    await get_browser_runtime().revalidate()
     endpoint_ids = (
         (
             await context.session.execute(
@@ -656,6 +658,7 @@ async def put_account_proxy_binding(
     # cache and durably bump ``upstream_route`` before responding so no
     # request on the mutating replica resolves the pre-mutation binding.
     await get_upstream_route_cache().invalidate()
+    await get_browser_runtime().revalidate()
     if reactivated:
         # Invalidate + bump only after the status commit so peers (and this
         # replica's poller) never rebuild selection/routing inputs from the
@@ -1639,6 +1642,7 @@ async def update_settings(
         # instead of the first recovered poll cycle. The re-clear inside
         # ``invalidate`` is harmless; the guarding clear already ran pre-await.
         await get_upstream_route_cache().invalidate()
+        await get_browser_runtime().revalidate()
     actor_ip = request.client.host if request.client else None
     AuditService.log_async(
         "settings_changed",

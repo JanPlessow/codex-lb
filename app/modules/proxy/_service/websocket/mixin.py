@@ -84,6 +84,7 @@ from app.core.openai.parsing import (
 from app.core.openai.requests import (
     ResponsesRequest,
 )
+from app.core.pool_policy import assert_pool_account
 from app.core.resilience.network_recovery import (
     NetworkRecoveryDecision,
     ProcessNetworkRecovery,
@@ -4757,6 +4758,7 @@ class _WebSocketMixin:
     ) -> UpstreamWebSocket:
         proxy = cast(_WebSocketServiceProtocol, self)
         _ = proxy
+        assert_pool_account(account)
         access_token = proxy._encryptor.decrypt(account.access_token_encrypted)
         headers = apply_codex_installation_headers(
             headers,

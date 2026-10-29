@@ -99,6 +99,7 @@ from app.modules.proxy._load_balancer.opportunistic_admission import (
     detached_runtime_snapshot,
     run_opportunistic_admission,
 )
+from app.modules.proxy._load_balancer.pool_admission import apply_pool_policy
 from app.modules.proxy._load_balancer.sticky_selection import (
     _STICKY_EXISTING_UNSET,
     SelectionInputsProtocol,
@@ -686,9 +687,7 @@ class LoadBalancer:
                     ignore_standard_quota_status=selection_inputs.ignore_standard_quota_status,
                     persist_standard_quota_status=selection_inputs.persist_standard_quota_status,
                     routing_policy_override=selection_inputs.routing_policy_override,
-                    quota_admitted_catalog_omission_account_ids=(
-                        selection_inputs.quota_admitted_catalog_omission_account_ids
-                    ),
+                    quota_admitted_catalog_omission_account_ids=selection_inputs.quota_admitted_catalog_omission_account_ids,
                 )
             if excluded_ids and selection_inputs.accounts:
                 filtered_accounts = [account for account in selection_inputs.accounts if account.id not in excluded_ids]
@@ -724,10 +723,11 @@ class LoadBalancer:
                     ignore_standard_quota_status=selection_inputs.ignore_standard_quota_status,
                     persist_standard_quota_status=selection_inputs.persist_standard_quota_status,
                     routing_policy_override=selection_inputs.routing_policy_override,
-                    quota_admitted_catalog_omission_account_ids=(
-                        selection_inputs.quota_admitted_catalog_omission_account_ids
-                    ),
+                    quota_admitted_catalog_omission_account_ids=selection_inputs.quota_admitted_catalog_omission_account_ids,
                 )
+            selection_inputs = apply_pool_policy(
+                selection_inputs, required_account_id if owner_restricted_selection else None
+            )
             if required_continuity_owner:
                 assert required_account_id is not None
                 failure = _required_continuity_owner_failure(
@@ -2584,6 +2584,8 @@ def _state_from_account(
         plan_type=account.plan_type,
         capacity_credits=capacity_credits,
         health_tier=new_tier,
+        measured_used_percent=used_percent,
+        measured_secondary_used_percent=secondary_used,
         priority_used_percent=used_percent if usage_exhaustion_evidence_status else None,
         priority_secondary_used_percent=secondary_used if usage_exhaustion_evidence_status else None,
         access_token_expires_at=access_token_expires_at,

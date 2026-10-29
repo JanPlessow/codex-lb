@@ -22,7 +22,9 @@ from app.core.auth import (
 from app.core.auth.api_key_cache import get_api_key_cache
 from app.core.auth.refresh import RefreshError
 from app.core.cache.invalidation import NAMESPACE_API_KEY, get_cache_invalidation_poller
+from app.core.clients.codex import CodexClient, CodexTransportError, create_codex_session, release_codex_response
 from app.core.clients.http import lease_http_session
+from app.core.clients.proxy import _codex_response_status
 from app.core.clients.usage import (
     ConsumeRateLimitResetCreditResponse,
     UsageFetchError,
@@ -33,10 +35,12 @@ from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
 from app.core.openai.host_models import resolve_default_host_model
 from app.core.plan_types import coerce_account_plan_type
+from app.core.pool_policy import assert_pool_account
 from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError, resolve_upstream_route
 from app.core.upstream_proxy.cache import get_upstream_route_cache
 from app.core.upstream_proxy.resolver import _is_missing_upstream_proxy_schema
 from app.core.usage.models import UsagePayload
+from app.core.utils.shared_future import _await_cleanup_deferring_cancellation
 from app.core.utils.time import naive_utc_to_epoch, to_utc_naive, utcnow
 from app.db.models import Account, AccountStatus, DashboardSettings
 from app.db.session import get_background_session
@@ -288,8 +292,9 @@ class AccountsService:
         )
 
     async def _fetch_usage_payload_for_reset_credits(self, account: Account) -> UsagePayload:
+        assert_pool_account(account)
         access_token = self._encryptor.decrypt(account.access_token_encrypted)
-        route = await self._resolve_usage_reset_credit_route(account, operation="usage_reset_credits_read")
+        route = await self._resolve_account_route(account, operation="usage_reset_credits_read")
         try:
             return await fetch_usage(
                 access_token=access_token,
@@ -308,8 +313,9 @@ class AccountsService:
                 ) from refresh_exc
             if not account.chatgpt_account_id:
                 raise AccountUsageResetCreditsUnavailableError("Account is missing ChatGPT account identity") from exc
+            assert_pool_account(account)
             access_token = self._encryptor.decrypt(account.access_token_encrypted)
-            retry_route = await self._resolve_usage_reset_credit_route(account, operation="usage_reset_credits_read")
+            retry_route = await self._resolve_account_route(account, operation="usage_reset_credits_read")
             return await fetch_usage(
                 access_token=access_token,
                 account_id=account.chatgpt_account_id,
@@ -380,8 +386,9 @@ class AccountsService:
         if not chatgpt_account_id:
             raise AccountUsageResetConsumeUnavailableError("Account is missing ChatGPT account identity")
         effective_redeem_request_id = redeem_request_id or str(uuid4())
+        assert_pool_account(account)
         access_token = self._encryptor.decrypt(account.access_token_encrypted)
-        route = await self._resolve_usage_reset_credit_route(account, operation="usage_reset_credits_consume")
+        route = await self._resolve_account_route(account, operation="usage_reset_credits_consume")
         try:
             response = await consume_rate_limit_reset_credit(
                 access_token=access_token,
@@ -402,8 +409,9 @@ class AccountsService:
                 ) from refresh_exc
             if not account.chatgpt_account_id:
                 raise AccountUsageResetConsumeUnavailableError("Account is missing ChatGPT account identity") from exc
+            assert_pool_account(account)
             access_token = self._encryptor.decrypt(account.access_token_encrypted)
-            retry_route = await self._resolve_usage_reset_credit_route(account, operation="usage_reset_credits_consume")
+            retry_route = await self._resolve_account_route(account, operation="usage_reset_credits_consume")
             response = await consume_rate_limit_reset_credit(
                 access_token=access_token,
                 account_id=account.chatgpt_account_id,
@@ -413,7 +421,7 @@ class AccountsService:
             )
             return response, account
 
-    async def _resolve_usage_reset_credit_route(
+    async def _resolve_account_route(
         self,
         account: Account,
         *,
@@ -444,6 +452,7 @@ class AccountsService:
         if account is None:
             return None
 
+        assert_pool_account(account)
         access_token = self._encryptor.decrypt(account.access_token_encrypted)
         refresh_token = self._encryptor.decrypt(account.refresh_token_encrypted)
         id_token = self._encryptor.decrypt(account.id_token_encrypted)
@@ -710,10 +719,12 @@ class AccountsService:
 
         access_token = self._encryptor.decrypt(probe_account.access_token_encrypted)
         probe_model = model or resolve_default_host_model()
+        route = await self._resolve_account_route(probe_account, operation="account_probe")
         probe_status = await self._send_probe_request(
             access_token=access_token,
             chatgpt_account_id=probe_account.chatgpt_account_id,
             model=probe_model,
+            route=route,
         )
 
         usage_refresh_fetch_succeeded: bool | None = None
@@ -759,6 +770,7 @@ class AccountsService:
         access_token: str,
         chatgpt_account_id: str | None,
         model: str,
+        route: ResolvedUpstreamRoute | None = None,
     ) -> int:
         settings = get_settings()
         base = settings.upstream_base_url.rstrip("/")
@@ -789,12 +801,30 @@ class AccountsService:
             sock_connect=PROBE_CONNECT_TIMEOUT_SECONDS,
         )
         try:
+            if route is not None:
+                client = CodexClient(create_codex_session())
+                response = None
+                try:
+                    response = await client.request(
+                        "POST", url, route=route, headers=headers, json=body, timeout=timeout, buffer_response=False
+                    )
+                    return _codex_response_status(response)
+                finally:
+                    try:
+                        if response is not None:
+                            cancellation = await _await_cleanup_deferring_cancellation(release_codex_response(response))
+                            if cancellation is not None:
+                                raise cancellation
+                    finally:
+                        cancellation = await _await_cleanup_deferring_cancellation(client.close())
+                        if cancellation is not None:
+                            raise cancellation
             async with lease_http_session() as session:
                 async with session.post(url, headers=headers, json=body, timeout=timeout) as resp:
                     # Initiating the request is enough to wake the upstream
                     # rate-limiter; we do not consume the SSE body.
                     return resp.status
-        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+        except (aiohttp.ClientError, asyncio.TimeoutError, CodexTransportError) as exc:
             logger.warning(
                 "Probe upstream request failed account=%s error=%s",
                 chatgpt_account_id,

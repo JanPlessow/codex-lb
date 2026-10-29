@@ -7,7 +7,7 @@ Regenerate with `uv run python scripts/generate_settings_reference.py`;
 `tests/unit/test_settings_reference.py` fails when this page drifts from
 `app/core/config/settings.py`.
 
-codex-lb currently exposes 96 settings. Every setting is an environment
+codex-lb currently exposes 105 settings. Every setting is an environment
 variable, normally with the `CODEX_LB_` prefix (process environment or `.env` /
 `.env.local` next to the process); aliased settings list every accepted name.
 All defaults work with zero configuration —
@@ -262,6 +262,15 @@ anything else belongs in `app/core/config/settings.py`.
 | Environment variable | Tier | Type | Default |
 | --- | --- | --- | --- |
 | `CODEX_LB_EVENT_LOOP_LAG_WARN_THRESHOLD_SECONDS` | T1 | `float` | `0.5` |
+| `CODEX_LB_LOCAL_BROWSER_ENABLED` | T1 | `bool` | `False` |
+| `CODEX_LB_NATIVE_INLINE_REPLAY_ENABLED` | T4 | `bool` | `False` |
+| `CODEX_LB_POOL_BOUND_WORK_CUTOFF_PERCENT` | T1 | `float` | `99.5` |
+| `CODEX_LB_POOL_FRESH_WORK_CUTOFF_PERCENT` | T1 | `float \| None` | `None` |
+| `CODEX_LB_POOL_PROTECTED_EMAILS` | T1 | `list[str]` | `[]` |
+| `CODEX_LB_POOL_PROTECTED_PRINCIPALS` | T1 | `list[str]` | `[]` |
+| `CODEX_LB_POOL_REFRESH_REPLAY_FENCE_ENABLED` | T1 | `bool` | `False` |
+| `CODEX_LB_POOL_SERVING_CONTRACT_ENABLED` | T1 | `bool` | `False` |
+| `CODEX_LB_POOL_USAGE_MAX_AGE_SECONDS` | T1 | `float` | `180` |
 | `CODEX_LB_TELEMETRY_ENABLED` | T3 (dashboard) | `bool \| None` | `None` |
 | `CODEX_LB_TELEMETRY_ENDPOINT` | T1 | `str` | `'https://telemetry.tokmaxxing.com'` |
 | `CODEX_LB_THREAD_CACHE_IDENTITY_MODE` | T3 (dashboard) | `str` | `'shared'` |
