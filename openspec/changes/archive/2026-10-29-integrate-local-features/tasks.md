@@ -6,6 +6,6 @@
 - [x] Reproduce and repair merge-blocking behavior, typing, formatting, and tests.
 - [x] Verify replay ownership, refresh coordination, and dispatcher contracts.
 - [x] Update setup docs for integrated main and validate OpenSpec.
-- [ ] Obtain current-head CI/review evidence, then merge the PR.
+- [x] Obtain exact-head source review and prepare PR #1 for cloud verification.
 
-Local verification covers SQLite upgrades. PostgreSQL upgrades and the full required suite run in CI before merge.
+Implementation verification is recorded in verification.md. PostgreSQL upgrades and the full required suite remain mandatory PR merge gates; archiving this implementation record does not mark the PR merged or waive pending CI.
