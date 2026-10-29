@@ -49,6 +49,7 @@ def to_request_log_entry(
         api_key_id=log.api_key_id,
         api_key_name=api_key_name,
         request_id=log.request_id,
+        orca_terminal_handle=log.orca_terminal_handle if include_sensitive_metadata else None,
         archive_request_id=log.archive_request_id if include_sensitive_metadata else None,
         request_kind=log.request_kind,
         connection_request_kind=log.connection_request_kind,

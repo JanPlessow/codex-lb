@@ -20,6 +20,7 @@ from app.core.clients.rate_limit_reset_credits import (
 )
 from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
+from app.core.pool_policy import assert_pool_account
 from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError
 from app.db.models import Account, AccountStatus
 from app.db.session import detach_session_objects, get_background_session
@@ -219,6 +220,7 @@ async def _refresh_account_reset_credits(
             )
             return
     try:
+        assert_pool_account(account)
         access_token = encryptor.decrypt(account.access_token_encrypted)
         response = await fetch_fn(
             access_token,

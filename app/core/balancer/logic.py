@@ -130,6 +130,8 @@ class AccountState:
     plan_type: str | None = None
     capacity_credits: float | None = None
     health_tier: int = 0
+    measured_used_percent: float | None = None
+    measured_secondary_used_percent: float | None = None
     priority_used_percent: float | None = None
     priority_secondary_used_percent: float | None = None
     priority_reset_at: int | None = None
@@ -1375,10 +1377,17 @@ def evaluate_health_tier(
 
     should_drain = False
 
-    if state.used_percent is not None and state.used_percent >= drain_primary_threshold_pct:
+    primary_for_drain = state.measured_used_percent if state.measured_used_percent is not None else state.used_percent
+    secondary_for_drain = (
+        state.measured_secondary_used_percent
+        if state.measured_secondary_used_percent is not None
+        else state.secondary_used_percent
+    )
+
+    if primary_for_drain is not None and primary_for_drain >= drain_primary_threshold_pct:
         should_drain = True
 
-    if state.secondary_used_percent is not None and state.secondary_used_percent >= drain_secondary_threshold_pct:
+    if secondary_for_drain is not None and secondary_for_drain >= drain_secondary_threshold_pct:
         should_drain = True
 
     if (

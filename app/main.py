@@ -51,6 +51,7 @@ from app.core.middleware import (
 )
 from app.core.middleware.dashboard_gzip import add_dashboard_gzip_middleware
 from app.core.middleware.inflight import InFlightMiddleware
+from app.core.middleware.orca_terminal import OrcaTerminalMiddleware
 from app.core.openai.model_refresh_scheduler import build_model_refresh_scheduler
 from app.core.resilience.backpressure import BackpressureMiddleware
 from app.core.resilience.bulkhead import BulkheadMiddleware, get_bulkhead
@@ -64,6 +65,7 @@ from app.core.usage.refresh_scheduler import build_usage_refresh_scheduler
 from app.core.usage.reset_credits_refresh_scheduler import build_rate_limit_reset_credits_scheduler
 from app.core.utils.time import utcnow
 from app.db.session import SessionLocal, close_db, close_session, init_background_db, init_db
+from app.modules import orca_bridge
 from app.modules.accounts import api as accounts_api
 from app.modules.accounts.deletion import build_account_deletion_scheduler
 from app.modules.accounts.repository import AccountsRepository
@@ -80,6 +82,8 @@ from app.modules.dashboard_auth import api as dashboard_auth_api
 from app.modules.firewall import api as firewall_api
 from app.modules.fleet import api as fleet_api
 from app.modules.health import api as health_api
+from app.modules.local_browser import api as local_browser_api
+from app.modules.local_browser.runtime import get_browser_runtime
 from app.modules.model_sources import api as model_sources_api
 from app.modules.oauth import api as oauth_api
 from app.modules.proxy import api as proxy_api
@@ -618,8 +622,10 @@ async def lifespan(app: FastAPI):
     startup_module._startup_complete = True
 
     try:
+        await get_browser_runtime().start()
         yield
     finally:
+        await get_browser_runtime().stop()
         shutdown_state.commit_shutdown(timeout_seconds=settings.shutdown_drain_timeout_seconds)
         remaining_drain_seconds = shutdown_state.remaining_drain_timeout_seconds() or 0.0
         drained = await shutdown_state.wait_for_in_flight_drain(timeout_seconds=remaining_drain_seconds)
@@ -791,6 +797,7 @@ def create_app() -> FastAPI:
     app.add_middleware(cast(Any, InFlightMiddleware))
     add_dashboard_gzip_middleware(app)
     add_dashboard_auth_proxy_middleware(app)
+    app.add_middleware(OrcaTerminalMiddleware)
     add_request_decompression_middleware(app)
     add_request_body_limit_middleware(app)
     add_multipart_content_encoding_middleware(app)
@@ -842,6 +849,8 @@ def create_app() -> FastAPI:
     app.include_router(runtime_api.router)
     app.include_router(oauth_api.router)
     app.include_router(dashboard_auth_api.router)
+    app.include_router(orca_bridge.router)
+    app.include_router(local_browser_api.router)
     app.include_router(settings_api.router)
     app.include_router(telemetry_api.router)
     app.include_router(firewall_api.router)
@@ -851,6 +860,9 @@ def create_app() -> FastAPI:
     app.include_router(api_keys_api.router)
     app.include_router(model_sources_api.router)
     app.include_router(health_api.router)
+    from app.core.pool_serving import install_pool_serving_contract
+
+    install_pool_serving_contract(app)
 
     static_dir = Path(__file__).parent / "static"
     index_html = static_dir / "index.html"

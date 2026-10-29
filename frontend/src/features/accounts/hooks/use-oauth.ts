@@ -7,6 +7,7 @@ import {
   startOauth,
   submitManualOauthCallback,
 } from "@/features/accounts/api";
+import { startAccountBrowser, type BrowserStart } from "@/features/accounts/browser-api";
 import { invalidateAccountRelatedQueries } from "@/features/accounts/query-invalidation";
 import { OAuthStateSchema, type OAuthState } from "@/features/accounts/schemas";
 
@@ -146,13 +147,13 @@ export function useOauth() {
     }, 1000);
   }, [clearCountdownTimer, setOauthState]);
 
-  const start = useCallback(async (forceMethod?: "browser" | "device", accountId?: string) => {
+  const start = useCallback(async (forceMethod?: "browser" | "device", accountId?: string, browserRequest?: BrowserStart) => {
     clearPollTimer();
     clearCountdownTimer();
     setOauthState((prev) => ({ ...prev, status: "starting", errorMessage: null }));
 
     try {
-      const response = await startOauth({ forceMethod, accountId });
+      const response = browserRequest ? await startAccountBrowser(browserRequest) : await startOauth({ forceMethod, accountId });
       const method = response.method === "device" ? "device" : "browser";
       const nextState = OAuthStateSchema.parse({
         flowId: response.flowId ?? null,

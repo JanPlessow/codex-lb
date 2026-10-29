@@ -21,6 +21,7 @@ from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
 from app.core.openai.model_registry import get_model_registry
 from app.core.openai.requests import ResponsesCompactRequest, ResponsesReasoning
+from app.core.pool_policy import assert_pool_account
 from app.core.upstream_proxy import ResolvedUpstreamRoute, resolve_upstream_route
 from app.core.utils.time import naive_utc_to_epoch, utcnow
 from app.db.models import Account, AccountStatus
@@ -1146,6 +1147,7 @@ class AutomationsService:
                 attempt_count += 1
                 last_attempted_account_id = account_id
                 account = await self._auth_manager.ensure_fresh(account)
+                assert_pool_account(account)
                 access_token = self._encryptor.decrypt(account.access_token_encrypted)
                 route = await _resolve_upstream_route_for_account(
                     account,

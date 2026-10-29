@@ -239,6 +239,7 @@ class Settings(BaseSettings):
     )
 
     data_dir: Path = Field(default_factory=_default_home_dir)
+    local_browser_enabled: bool = False
     database_url: str = DEFAULT_DATABASE_URL
     # Pool timeout and recycle are fixed constants in ``app/db/session.py``;
     # the background-task engine always derives its pool sizing from the two
@@ -337,6 +338,14 @@ class Settings(BaseSettings):
     # Recovery-first mode can either ask the client to drop an ambiguous anchor
     # or let the bridge retry that anchored request once on a fresh upstream
     # socket. Both are at-least-once strategies; fail-closed remains default.
+    native_inline_replay_enabled: bool = False
+    pool_protected_emails: list[str] = Field(default_factory=list)
+    pool_protected_principals: list[str] = Field(default_factory=list)
+    pool_fresh_work_cutoff_percent: float | None = Field(default=None, gt=0, le=100)
+    pool_bound_work_cutoff_percent: float = Field(default=99.5, gt=0, le=100)
+    pool_usage_max_age_seconds: float = Field(default=180, gt=0)
+    pool_refresh_replay_fence_enabled: bool = False
+    pool_serving_contract_enabled: bool = False
     http_responses_session_bridge_ambiguous_continuation_recovery_mode: Literal[
         "fail_closed",
         "client_full_history_once",

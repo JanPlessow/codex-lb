@@ -55,6 +55,7 @@ from app.core.metrics.prometheus import (
 )
 from app.core.openai.model_registry import canonical_service_tier_value, get_model_registry
 from app.core.plan_types import account_plan_matches_allowed, normalize_account_plan_type
+from app.core.pool_policy import pool_account_allowed, quota_admits
 from app.core.resilience.circuit_breaker import are_all_account_circuit_breakers_open
 from app.core.resilience.degradation import get_status as get_degradation_status
 from app.core.resilience.degradation import set_degraded, set_normal
@@ -677,6 +678,36 @@ class LoadBalancer:
                         selection_inputs.quota_admitted_catalog_omission_account_ids
                     ),
                 )
+            # Apply hard policy on every selection, including cache hits and
+            # retries. Soft affinity is not permission to spend the reserve.
+            allowed_owners = [
+                account
+                for account in selection_inputs.effective_continuity_owner_candidates
+                if pool_account_allowed(account)
+            ]
+            eligible = [
+                account
+                for account in selection_inputs.accounts
+                if pool_account_allowed(account)
+                and quota_admits(
+                    selection_inputs.latest_primary.get(account.id),
+                    selection_inputs.latest_secondary.get(account.id),
+                    bound=owner_restricted_selection and account.id == required_account_id,
+                )
+            ]
+            selection_inputs = replace(
+                selection_inputs,
+                accounts=eligible,
+                continuity_owner_candidates=allowed_owners,
+                sticky_mutation_authority_account_ids=(
+                    selection_inputs.effective_sticky_mutation_authority_account_ids
+                    - frozenset(
+                        account.id
+                        for account in (selection_inputs.runtime_accounts or [])
+                        if not pool_account_allowed(account)
+                    )
+                ),
+            )
             if required_continuity_owner:
                 assert required_account_id is not None
                 failure = _required_continuity_owner_failure(
@@ -2575,6 +2606,8 @@ def _state_from_account(
         plan_type=account.plan_type,
         capacity_credits=capacity_credits,
         health_tier=new_tier,
+        measured_used_percent=used_percent,
+        measured_secondary_used_percent=secondary_used,
         priority_used_percent=used_percent if usage_exhaustion_evidence_status else None,
         priority_secondary_used_percent=secondary_used if usage_exhaustion_evidence_status else None,
         inflight_response_creates=runtime.inflight_response_creates,

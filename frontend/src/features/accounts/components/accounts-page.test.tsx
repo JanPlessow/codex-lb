@@ -7,6 +7,10 @@ import { AccountsPage } from "@/features/accounts/components/accounts-page";
 import { useAccountQuotaDisplayStore } from "@/hooks/use-account-quota-display";
 import type { AccountSummary } from "@/features/accounts/schemas";
 
+vi.mock("@tanstack/react-query", () => ({
+  useQuery: vi.fn(() => ({ data: { enabled: false }, error: null })),
+}));
+
 vi.mock("@/features/accounts/hooks/use-accounts", () => ({
   useAccounts: vi.fn(),
   useAccountTrends: vi.fn(() => ({ data: null })),

@@ -506,7 +506,7 @@ async def test_socks_websocket_uses_proxy_connector_and_closes_session(
         "proxy_type": ProxyType.SOCKS5,
         "username": "u;session",
         "password": "p@x:y",
-        "rdns": True,
+        "rdns": scheme == "socks5h",
         "ssl": "present",
     }
     assert session.calls == [{"url": "wss://upstream.test", "heartbeat": 30}]

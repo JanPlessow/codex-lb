@@ -320,6 +320,7 @@ export function RecentRequestsTable({
 }: RecentRequestsTableProps) {
   const { t } = useTranslation();
   const [selectedRequest, setSelectedRequest] = useState<RequestLog | null>(null);
+  const [orcaState, setOrcaState] = useState<"idle" | "loading" | "success" | "error">("idle");
   const blurred = usePrivacyStore((s) => s.blurred);
   const isAdmin = useAuthStore((state) => state.role === "admin");
   const dateDisplayFormat = useDateDisplayFormatStore((state) => state.dateDisplayFormat);
@@ -737,7 +738,10 @@ export function RecentRequestsTable({
               </div>
             </div>
           </div>
-          <DialogFooter showCloseButton />
+          <DialogFooter>
+            {selectedRequest?.orcaTerminalHandle ? <Button type="button" variant="outline" disabled={orcaState === "loading"} onClick={async () => { setOrcaState("loading"); try { const response = await fetch("/api/orca/terminal/switch", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ handle: selectedRequest.orcaTerminalHandle }) }); setOrcaState(response.ok ? "success" : "error"); } catch { setOrcaState("error"); } }}>{orcaState === "loading" ? t("dashboard.requestDetails.openingInOrca", "Opening…") : orcaState === "success" ? t("dashboard.requestDetails.openedInOrca", "Opened") : orcaState === "error" ? t("dashboard.requestDetails.orcaUnavailable", "Terminal unavailable") : t("dashboard.requestDetails.openInOrca", "Open in Orca")}</Button> : null}
+            <Button type="button" variant="outline" onClick={() => { setSelectedRequest(null); setOrcaState("idle"); }}>{t("common.close", "Close")}</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </div>

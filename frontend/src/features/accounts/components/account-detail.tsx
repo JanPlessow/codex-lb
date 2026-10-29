@@ -30,6 +30,7 @@ export type AccountDetailProps = {
   showAccountId?: boolean;
   busy: boolean;
   readOnly?: boolean;
+  managedBrowser?: boolean;
   onPause: (accountId: string) => void;
   onResume: (accountId: string) => void;
   onProbe: (accountId: string) => void;
@@ -59,6 +60,7 @@ export function AccountDetail({
   showAccountId = false,
   busy,
   readOnly = false,
+  managedBrowser = false,
   onPause,
   onResume,
   onProbe,
@@ -181,6 +183,7 @@ export function AccountDetail({
         onProbe={onProbe}
         onDelete={onDelete}
         onReauth={onReauth}
+        managedBrowser={managedBrowser}
         onExportAuth={onExportAuth}
         onResetCredit={onResetCredit}
         showResetCreditExpiryBadge={showResetCreditExpiryBadge}

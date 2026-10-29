@@ -49,6 +49,7 @@ from app.core.openai.parsing import (
 from app.core.openai.requests import (
     ResponsesRequest,
 )
+from app.core.pool_policy import assert_pool_account
 from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError
 from app.core.utils.sse import CODEX_KEEPALIVE_FRAME as CODEX_KEEPALIVE_FRAME  # noqa: F401
 from app.core.utils.sse import format_sse_event, parse_sse_data_json
@@ -497,6 +498,7 @@ class _StreamingMixin(_StreamingRetryMixin):
     ) -> AsyncIterator[str]:
         proxy = cast(_StreamingServiceProtocol, self)
         account_id_value = account.id
+        assert_pool_account(account)
         access_token = proxy._encryptor.decrypt(account.access_token_encrypted)
         account_id = _header_account_id(account.chatgpt_account_id)
         model = payload.model

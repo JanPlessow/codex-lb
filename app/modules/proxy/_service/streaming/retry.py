@@ -79,6 +79,7 @@ from app.modules.proxy.helpers import (
     is_upstream_model_capacity_error,
 )
 from app.modules.proxy.load_balancer import AccountLease, AccountSelection
+from app.modules.proxy.native_inline_replay import normalize_native_inline_request
 from app.modules.proxy.replay_safety import responses_payload_is_account_neutral_fresh_replay
 from app.modules.proxy.selection_errors import USAGE_LIMIT_REACHED, selection_failure_response
 
@@ -285,6 +286,17 @@ class _StreamingRetryMixin:
         request_id = ensure_request_id()
         start = time.monotonic()
         base_settings = _facade().get_settings()
+        native_inline_payload = None
+        if (
+            getattr(base_settings, "native_inline_replay_enabled", False)
+            and request_transport == _REQUEST_TRANSPORT_HTTP
+            and _sticky_key_from_turn_state_header(headers) is None
+            and rewritten_file_account_id is None
+        ):
+            projected = normalize_native_inline_request(payload)
+            if projected is not None:
+                payload = projected
+                native_inline_payload = payload.to_replay_safety_payload()
         settings = await _facade().get_settings_cache().get()
         concurrency_caps = _facade().effective_account_concurrency_caps(settings)
         deadline = start + _facade()._stream_request_budget_seconds(
@@ -594,6 +606,8 @@ class _StreamingRetryMixin:
                         error_type="server_error",
                     ),
                 )
+            if native_inline_payload is not None and payload.to_replay_safety_payload() == native_inline_payload:
+                return False
             return required_account_id is None and not responses_payload_is_account_neutral_fresh_replay(
                 payload.to_replay_safety_payload()
             )

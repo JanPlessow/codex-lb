@@ -20,7 +20,11 @@ touch the shared future's callback list.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable
 from typing import TypeVar
+
+import anyio
+from anyio.lowlevel import checkpoint_if_cancelled
 
 _T = TypeVar("_T")
 
@@ -78,3 +82,28 @@ async def wait_on_shared_future(
         return await asyncio.wait_for(proxy, timeout)
     finally:
         waiters.discard(proxy)
+
+
+async def _await_cleanup_deferring_cancellation(awaitable: Awaitable[object]) -> asyncio.CancelledError | None:
+    """Finish required cleanup, returning the deferred cancellation marker.
+
+    Compatibility backport of upstream's cleanup helper without its newer
+    virtual-clock dependency. Preserve cancellation after owned cleanup ends.
+    """
+    task = asyncio.ensure_future(awaitable)
+    cancellation: asyncio.CancelledError | None = None
+    with anyio.CancelScope(shield=True):
+        while True:
+            try:
+                await wait_on_shared_future(task)
+                break
+            except asyncio.CancelledError as exc:
+                if task.cancelled():
+                    raise
+                cancellation = cancellation or exc
+    if cancellation is None:
+        try:
+            await checkpoint_if_cancelled()
+        except asyncio.CancelledError as exc:
+            cancellation = exc
+    return cancellation

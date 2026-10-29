@@ -29,6 +29,8 @@ from app.core.balancer import PERMANENT_FAILURE_CODES, account_status_for_perman
 from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
 from app.core.plan_types import coerce_account_plan_type
+from app.core.pool_policy import assert_pool_account, assert_pool_identity, assert_pool_tokens
+from app.core.pool_refresh_fence import reserve_refresh_exchange
 from app.core.upstream_proxy import UpstreamProxyRouteError, resolve_upstream_route
 from app.core.utils.shared_future import wait_on_shared_future
 from app.core.utils.time import utcnow
@@ -287,12 +289,15 @@ class AuthManager:
         self._refresh_claims = refresh_claims
 
     async def ensure_fresh(self, account: Account, *, force: bool = False) -> Account:
+        assert_pool_account(account)
         if force or should_refresh(account.last_refresh):
             account = await _REFRESH_SINGLEFLIGHT.run(
                 _refresh_singleflight_key(self._encryptor, account),
                 lambda: self._run_refresh(account),
             )
-        return await self._ensure_chatgpt_account_id(account)
+        account = await self._ensure_chatgpt_account_id(account)
+        assert_pool_account(account)
+        return account
 
     async def _run_refresh(self, account: Account) -> Account:
         """Singleflight body for token refresh.
@@ -340,6 +345,7 @@ class AuthManager:
         return value
 
     async def refresh_account(self, account: Account) -> Account:
+        assert_pool_account(account)
         claims = self._refresh_claims if self._refresh_claims is not None else get_refresh_claim_coordinator()
         if claims is None:
             return await self._perform_refresh(account, refresh_token_encrypted=account.refresh_token_encrypted)
@@ -562,6 +568,8 @@ class AuthManager:
                     return adopted
             raise
 
+        assert_pool_identity(result.email, result.chatgpt_user_id)
+        assert_pool_tokens(result.access_token, result.id_token)
         new_access_token_encrypted = self._encryptor.encrypt(result.access_token)
         new_refresh_token_encrypted = self._encryptor.encrypt(result.refresh_token)
         new_id_token_encrypted = self._encryptor.encrypt(result.id_token)
@@ -1117,6 +1125,7 @@ class AuthManager:
         ) from exc
 
     async def _refresh_tokens(self, refresh_token: str, *, account: Account) -> TokenRefreshResult:
+        assert_pool_account(account)
         # Bound the ENTIRE claim-holding work of this body — the token-refresh
         # admission wait AND the upstream OAuth exchange — by the caller's
         # remaining refresh budget. This runs inside the shielded singleflight
@@ -1179,6 +1188,7 @@ class AuthManager:
                     )
                 exchange_override = push_token_refresh_timeout_override(remaining)
             try:
+                reserve_refresh_exchange(sha256(refresh_token.encode("utf-8")).hexdigest())
                 return await _call_with_supported_optional_kwargs(
                     refresh_access_token,
                     refresh_token,

@@ -4763,3 +4763,48 @@ async def test_shared_owner_lookup_session_reads_each_owner_key_exactly_once() -
     # session-per-lookup flow would have recorded three distinct ids here.
     assert len(lookup_context_ids) == 1
     assert None not in lookup_context_ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("primary_used", "secondary_used", "keep_owner"),
+    [(84.0, 10.0, True), (10.0, 89.0, True), (96.0, 10.0, False), (10.0, 96.0, False)],
+)
+async def test_sticky_selection_uses_measured_quota_under_inflight_pressure(
+    primary_used: float, secondary_used: float, keep_owner: bool
+) -> None:
+    owner = _make_account("measured-quota-owner")
+    peer = _make_account("measured-quota-peer")
+    reset_at = int(time.time()) + 300
+    primary = _usage_row_with_percent(1, owner.id, used_percent=primary_used, reset_at=reset_at)
+    secondary = _usage_row(2, owner.id, window="secondary", reset_at=reset_at)
+    secondary.used_percent = secondary_used
+    usage_repo = _StubUsageRepository(
+        primary={
+            owner.id: primary,
+            peer.id: _usage_row_with_percent(3, peer.id, used_percent=10.0, reset_at=reset_at),
+        },
+        secondary={owner.id: secondary},
+    )
+    sticky_repo = _StubStickySessionsRepository()
+    sticky_repo.account_id = owner.id
+    balancer = LoadBalancer(lambda: _repo_factory(_StubAccountsRepository([owner, peer]), usage_repo, sticky_repo))
+    balancer._runtime[owner.id] = RuntimeState(inflight_streams=5)
+
+    selected = await balancer.select_account(
+        sticky_key="measured-quota-session",
+        sticky_kind=StickySessionKind.PROMPT_CACHE,
+        routing_strategy="usage_weighted",
+        budget_threshold_pct=95.0,
+        secondary_budget_threshold_pct=95.0,
+        lease_kind="stream",
+        concurrency_caps=load_balancer_module.AccountConcurrencyCaps(response_create_limit=0, stream_limit=0),
+    )
+
+    assert selected.account is not None
+    assert selected.account.id == (owner.id if keep_owner else peer.id)
+    assert selected.lease is not None
+    await balancer.release_account_lease(selected.lease)
+    if keep_owner:
+        assert balancer._runtime[owner.id].health_tier == HEALTH_TIER_HEALTHY
+    assert balancer._runtime[owner.id].inflight_streams == 5

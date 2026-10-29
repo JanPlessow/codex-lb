@@ -738,6 +738,7 @@ function listFilteredAutomationRuns(url: URL) {
 }
 
 export const handlers = [
+  http.get("/api/local-browser/capabilities", () => HttpResponse.json({ enabled: false })),
   http.get("/health", () => {
     return HttpResponse.json({ status: "ok" });
   }),

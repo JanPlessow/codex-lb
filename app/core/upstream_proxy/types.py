@@ -15,7 +15,7 @@ class ResolvedProxyEndpoint:
 
     @property
     def proxy_url(self) -> str:
-        scheme = "socks5h" if self.scheme == "socks5" else self.scheme
+        scheme = self.scheme
         auth = ""
         if self.username:
             auth = f"{quote(self.username, safe='')}:{quote(self.password or '', safe='')}@"

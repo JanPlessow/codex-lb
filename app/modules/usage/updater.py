@@ -23,6 +23,7 @@ from app.core.clients.usage import UsageFetchError, fetch_usage
 from app.core.config.settings import get_settings
 from app.core.crypto import TokenEncryptor
 from app.core.plan_types import ACCOUNT_PLAN_TYPES, coerce_account_plan_type, normalize_account_plan_type
+from app.core.pool_policy import assert_pool_account
 from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError, resolve_upstream_route
 from app.core.usage.models import AdditionalRateLimitPayload, UsagePayload, UsageWindow
 from app.core.utils.request_id import get_request_id
@@ -549,6 +550,7 @@ class UsageUpdater:
         usage_account_id: str | None,
         access_token_override: str | None = None,
     ) -> AccountRefreshResult:
+        assert_pool_account(account)
         access_token = access_token_override or self._encryptor.decrypt(account.access_token_encrypted)
         payload: UsagePayload | None = None
         try:
@@ -582,6 +584,7 @@ class UsageUpdater:
             except RefreshError:
                 _mark_usage_refresh_auth_cooldown(account.id, exc.status_code)
                 return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
+            assert_pool_account(account)
             access_token = self._encryptor.decrypt(account.access_token_encrypted)
             try:
                 route = await _resolve_upstream_route_for_account(account, operation="usage_refresh")
